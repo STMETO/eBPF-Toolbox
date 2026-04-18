@@ -36,6 +36,7 @@ endif
 # 【你的项目架构】
 # ==============================
 BPF_DIR      := bpf
+SRC_ROOT     := src
 SRC_PERF     := src/perf
 #SRC_NET      := src/net
 SRC_COMMON   := src/common
@@ -50,6 +51,7 @@ INCLUDES := \
 	-I$(LIBBPF_SRC)/../include/uapi \
 	-I$(BPF_DIR)/include \
 	-I$(SRC_COMMON) \
+	-I./src/include \
 	-I$(LIBBPF_SRC)/..
 
 # ==============================
@@ -81,9 +83,11 @@ TARGET_PERF := cpu_watcher
 # ==============================
 USER_PERF_SRCS := $(wildcard $(SRC_PERF)/*.c)
 USER_COMMON_SRCS := $(wildcard $(SRC_COMMON)/*.c)
+USER_MAIN_SRC := $(SRC_ROOT)/main.c
 
 USER_PERF_OBJS := $(patsubst %.c, $(OUTPUT)/%.o, $(notdir $(USER_PERF_SRCS)))
 USER_COMMON_OBJS := $(patsubst %.c, $(OUTPUT)/%.o, $(notdir $(USER_COMMON_SRCS)))
+USER_MAIN_OBJ := $(OUTPUT)/main.o
 
 # ==============================
 # Clang 系统头文件
@@ -171,9 +175,16 @@ $(OUTPUT)/%.o: $(SRC_PERF)/%.c $(BPF_SKELS) $(LIBBPF_OBJ) | $(OUTPUT)
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 ################################################################################
+# 编译用户态 main
+################################################################################
+$(OUTPUT)/main.o: $(USER_MAIN_SRC) $(LIBBPF_OBJ) | $(OUTPUT)
+	$(call msg,CC,main.c)
+	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+################################################################################
 # 链接最终程序
 ################################################################################
-$(TARGET_PERF): $(USER_PERF_OBJS) $(USER_COMMON_OBJS) $(LIBBPF_OBJ)
+$(TARGET_PERF): $(USER_MAIN_OBJ) $(USER_PERF_OBJS) $(USER_COMMON_OBJS) $(LIBBPF_OBJ)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $^ $(LDFLAGS) -o $@
 
