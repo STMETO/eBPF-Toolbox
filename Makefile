@@ -9,20 +9,16 @@ CC ?= gcc
 # 第三方子模块路径
 # ==============================
 LIBBPF_SRC := $(abspath ./libbpf/src)
-LIBBPF_OBJ := $(abspath $(OUTPUT)/libbpf.a)
 
 BPFTOOL_SRC := $(abspath ./bpftool/src)
 BPFTOOL_OUTPUT := $(abspath $(OUTPUT)/bpftool)
 BPFTOOL := $(BPFTOOL_OUTPUT)/bootstrap/bpftool
-
-LIBBLAZESYM_SRC := $(abspath ./blazesym)
-LIBBLAZESYM_INC := $(abspath $(LIBBLAZESYM_SRC)/include)
-LIBBLAZESYM_OBJ := $(abspath $(OUTPUT)/libblazesym.a)
+LIBBPF_OBJ := $(abspath $(BPFTOOL_OUTPUT)/bootstrap/libbpf/libbpf.a)
 
 # ==============================
 # 系统架构
 # ==============================
-ARCH = $(shell uname -m | sed 's/x86_64/x86/;s/aarch64/arm64/;s/arm.*/arm/;s/riscv64/riscv/')
+ARCH ?= $(shell uname -m | sed 's/x86_64/x86/;s/aarch64/arm64/;s/arm.*/arm/;s/riscv64/riscv/')
 
 # ==============================
 # vmlinux.h
@@ -51,7 +47,6 @@ INCLUDES := \
 	-I$(OUTPUT)/include \
 	-I$(BPFTOOL_OUTPUT)/bootstrap/libbpf/include \
 	-I$(LIBBPF_SRC)/../include/uapi \
-	-I$(LIBBLAZESYM_INC) \
 	-I$(BPF_DIR)/include \
 	-I$(SRC_COMMON) \
 	-I$(LIBBPF_SRC)/..
@@ -78,17 +73,14 @@ BPF_SKELS := $(BPF_OBJS:.bpf.o=.skel.h)
 # 用户态可执行程序
 # ==============================
 TARGET_PERF := cpu_watcher
-TARGET_CTRL := controller
 
 # ==============================
 # 用户态源文件
 # ==============================
 USER_PERF_SRCS := $(wildcard $(SRC_PERF)/*.c)
-USER_CTRL_SRCS := $(wildcard $(SRC_CTRL)/*.c)
 USER_COMMON_SRCS := $(wildcard $(SRC_COMMON)/*.c)
 
 USER_PERF_OBJS := $(patsubst %.c, $(OUTPUT)/%.o, $(notdir $(USER_PERF_SRCS)))
-USER_CTRL_OBJS := $(patsubst %.c, $(OUTPUT)/%.o, $(notdir $(USER_CTRL_SRCS)))
 USER_COMMON_OBJS := $(patsubst %.c, $(OUTPUT)/%.o, $(notdir $(USER_COMMON_SRCS)))
 
 # ==============================
@@ -114,11 +106,11 @@ endif
 ################################################################################
 .PHONY: all clean
 
-all: $(TARGET_PERF) $(TARGET_CTRL) success
+all: $(TARGET_PERF) success
 
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -rf $(OUTPUT) $(TARGET_PERF) $(TARGET_CTRL)
+	$(Q)rm -rf $(OUTPUT) $(TARGET_PERF)
 
 $(OUTPUT):
 	$(Q)mkdir -p $@/perf $@/net $@/bpftool/bootstrap $@/libbpf $@/libbpf/include/uapi
@@ -126,19 +118,11 @@ $(OUTPUT):
 ################################################################################
 # 编译依赖库
 ################################################################################
-$(LIBBPF_OBJ): | $(OUTPUT)
-	$(call msg,LIB,libbpf)
-	$(Q)$(MAKE) -C $(LIBBPF_SRC) BUILD_STATIC_ONLY=1 \
-		OBJDIR=$(OUTPUT)/libbpf DESTDIR=$(OUTPUT) PREFIX= install
+$(LIBBPF_OBJ): $(BPFTOOL)
 
 $(BPFTOOL): | $(OUTPUT)
 	$(call msg,TOOL,bpftool)
 	$(Q)$(MAKE) -C $(BPFTOOL_SRC) OUTPUT=$(BPFTOOL_OUTPUT)/ bootstrap
-
-$(LIBBLAZESYM_OBJ):
-	$(call msg,LIB,blazesym)
-	$(Q)cd $(LIBBLAZESYM_SRC) && cargo build --release
-	$(Q)cp $(LIBBLAZESYM_SRC)/target/release/libblazesym.a $@
 
 $(VMLINUX_H): $(VMLINUX_SRC) | $(OUTPUT)
 	$(call msg,COPY,vmlinux.h)
@@ -185,20 +169,10 @@ $(OUTPUT)/%.o: $(SRC_PERF)/%.c $(BPF_SKELS) $(LIBBPF_OBJ) | $(OUTPUT)
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 ################################################################################
-# 编译用户态 controller
-################################################################################
-$(OUTPUT)/%.o: $(SRC_CTRL)/%.c $(LIBBPF_OBJ) | $(OUTPUT)
-	$(call msg,CC,ctrl/$(notdir $@))
-	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
-
-################################################################################
 # 链接最终程序
 ################################################################################
-$(TARGET_PERF): $(USER_PERF_OBJS) $(USER_COMMON_OBJS) $(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ)
+$(TARGET_PERF): $(USER_PERF_OBJS) $(USER_COMMON_OBJS) $(LIBBPF_OBJ)
 	$(call msg,BINARY,$@)
-	$(Q)$(CC) $^ $(LDFLAGS) -o $@
-
-$(TARGET_CTRL): $(USER_CTRL_OBJS) $(USER_COMMON_OBJS) $(LIBBPF_OBJ) $(LIBBLAZESYM_OBJ)
 	$(Q)$(CC) $^ $(LDFLAGS) -o $@
 
 ################################################################################

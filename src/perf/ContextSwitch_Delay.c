@@ -4,12 +4,15 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <bpf/libbpf.h>
 
-// 包含你定义的 共用结构体（头文件）
+#include "common.h"
+
+// 包含你定义的 共用结构体
 #include "ContextSwitch_Delay.h"
 
-// 自动生成的 BPF 骨架头文件（make 时自动生成）
+// 自动生成的 BPF 骨架头文件
 #include "perf/ContextSwitch_Delay.skel.h"
 
 // 全局变量：控制程序退出
@@ -31,7 +34,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	// 接收 eBPF 发过来的事件
 	const struct ContextSwitch_Delay_event *e = data;
 
-	printf("进程切换延迟: %-8llu us | 开始: %-10llu | 结束: %-10llu\n",
+	printf("进程切换延迟: %-8" PRIu64 " us | 开始: %-10" PRIu64 " | 结束: %-10" PRIu64 "\n",
 		e->delay, e->start_time, e->end_time);
 
 	return 0;
