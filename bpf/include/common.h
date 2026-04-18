@@ -1,8 +1,9 @@
 #ifndef __BPF_COMMON_H
 #define __BPF_COMMON_H
 
+#define TASK_COMM_LEN 16
+
 #if defined(__BPF__) && defined(__VMLINUX_H__)
-//#ifdef __VMLINUX_H__
 typedef __u8 bpf_bool_t;
 typedef __u8 bpf_u8_t;
 typedef __u16 bpf_u16_t;
@@ -27,3 +28,18 @@ typedef int64_t bpf_s64_t;
 #endif
 
 #endif
+
+/*
+// 类型对应速查表
+bpf_bool_t  →  bool
+bpf_u8_t    →  unsigned char  (uint8_t)
+bpf_u16_t   →  unsigned short (uint16_t)
+bpf_u32_t   →  unsigned int   (uint32_t)
+bpf_u64_t   →  unsigned long long (uint64_t)
+
+bpf_s8_t    →  char    (int8_t)
+bpf_s16_t   →  short   (int16_t)
+bpf_s32_t   →  int     (int32_t)
+bpf_s64_t   →  long long (int64_t)
+
+*/

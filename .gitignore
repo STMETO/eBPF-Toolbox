@@ -9,4 +9,8 @@
 *.tmp
 *.output
 build.log
+/build/
 /target/
+compile_commands.json
+.cache/
+.clangd

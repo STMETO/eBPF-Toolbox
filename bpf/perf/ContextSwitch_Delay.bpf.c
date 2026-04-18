@@ -1,7 +1,7 @@
-// eBPF程序必须包含的内核类型定义（u64/u32/pid等）
+// eBPF程序必须包含的内核类型定义
 #include <vmlinux.h>
 
-// eBPF核心帮助函数库（map操作、时间获取等）
+// eBPF核心帮助函数库
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>

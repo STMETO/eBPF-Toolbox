@@ -18,7 +18,8 @@ LIBBPF_OBJ := $(abspath $(BPFTOOL_OUTPUT)/bootstrap/libbpf/libbpf.a)
 # ==============================
 # 系统架构
 # ==============================
-ARCH ?= $(shell uname -m | sed 's/x86_64/x86/;s/aarch64/arm64/;s/arm.*/arm/;s/riscv64/riscv/')
+ARCH ?= $(shell uname -m)
+ARCH := $(shell printf '%s' '$(ARCH)' | sed 's/x86_64/x86/;s/aarch64/arm64/;s/arm.*/arm/;s/riscv64/riscv/')
 
 # ==============================
 # vmlinux.h
@@ -36,7 +37,7 @@ endif
 # ==============================
 BPF_DIR      := bpf
 SRC_PERF     := src/perf
-SRC_NET      := src/net
+#SRC_NET      := src/net
 SRC_COMMON   := src/common
 
 # ==============================
@@ -62,6 +63,7 @@ LDFLAGS := -lelf -lz -pthread -lstdc++
 # ==============================
 BPF_PERF_FILES := \
 	perf/ContextSwitch_Delay \
+	perf/SystemCall_Delay \
 
 BPF_ALL := $(BPF_PERF_FILES)
 
