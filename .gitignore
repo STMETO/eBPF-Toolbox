@@ -1,0 +1,12 @@
+*.o
+*.exe
+*.ko
+*.mod
+*.cmd
+.*.cmd
+*.d
+*.log
+*.tmp
+*.output
+build.log
+/target/
