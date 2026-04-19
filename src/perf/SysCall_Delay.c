@@ -14,8 +14,8 @@
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	const struct SystemCall_Delay_event *e = data;
-	uint32_t pid = e->pid >> 32;
-	uint32_t tid = e->pid & 0xFFFFFFFF;
+	uint32_t pid = e->pid >> 32;		// 提取 PID 高 32 位
+	uint32_t tid = e->pid & 0xFFFFFFFF; // 提取 TID 低 32 位
 	(void)ctx;
 	(void)data_sz;
 
