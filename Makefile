@@ -38,7 +38,7 @@ endif
 BPF_DIR      := bpf
 SRC_ROOT     := src
 SRC_PERF     := src/perf
-#SRC_NET      := src/net
+SRC_NET      := src/net
 SRC_COMMON   := src/common
 
 # ==============================
@@ -66,6 +66,9 @@ LDFLAGS := -lelf -lz -pthread -lstdc++
 BPF_PERF_FILES := \
 	perf/ContextSwitch_Delay \
 	perf/SystemCall_Delay \
+	net/TcpConnect_Delay
+
+
 
 BPF_ALL := $(BPF_PERF_FILES)
 
@@ -76,12 +79,16 @@ BPF_SKELS := $(BPF_OBJS:.bpf.o=.skel.h)
 # ==============================
 # 用户态可执行程序
 # ==============================
-TARGET_PERF := cpu_watcher
+TARGET_PERF := test
 
 # ==============================
 # 用户态源文件
 # ==============================
-USER_PERF_SRCS := $(wildcard $(SRC_PERF)/*.c)
+
+# 暂时只编译 net 下的 TcpConnect_Delay.c
+USER_PERF_SRCS := $(SRC_NET)/TcpConnect_Delay.c
+
+#USER_PERF_SRCS := $(wildcard $(SRC_PERF)/*.c)
 USER_COMMON_SRCS := $(wildcard $(SRC_COMMON)/*.c)
 USER_MAIN_SRC := $(SRC_ROOT)/main.c
 
@@ -162,35 +169,36 @@ $(foreach bpf,$(BPF_ALL),$(eval $(call BUILD_SKEL,$(bpf))))
 
 ################################################################################
 # 编译用户态 common
-################################################################################
 $(OUTPUT)/%.o: $(SRC_COMMON)/%.c $(LIBBPF_OBJ) | $(OUTPUT)
 	$(call msg,CC,common/$(notdir $@))
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 ################################################################################
 # 编译用户态 perf
-################################################################################
 $(OUTPUT)/%.o: $(SRC_PERF)/%.c $(BPF_SKELS) $(LIBBPF_OBJ) | $(OUTPUT)
 	$(call msg,CC,perf/$(notdir $@))
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 ################################################################################
-# 编译用户态 main
+# 编译 src/net/ 下的文件
+$(OUTPUT)/%.o: $(SRC_NET)/%.c $(BPF_SKELS) $(LIBBPF_OBJ) | $(OUTPUT)
+	$(call msg,CC,net/$(notdir $@))
+	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
 ################################################################################
+# 编译用户态 main
 $(OUTPUT)/main.o: $(USER_MAIN_SRC) $(LIBBPF_OBJ) | $(OUTPUT)
 	$(call msg,CC,main.c)
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 ################################################################################
 # 链接最终程序
-################################################################################
 $(TARGET_PERF): $(USER_MAIN_OBJ) $(USER_PERF_OBJS) $(USER_COMMON_OBJS) $(LIBBPF_OBJ)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $^ $(LDFLAGS) -o $@
 
 ################################################################################
 # 成功提示
-################################################################################
 success:
 	@echo -e "\033[32m========================================="
 	@echo "  编译完成！"
