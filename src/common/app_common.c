@@ -11,7 +11,7 @@ static volatile sig_atomic_t g_exit_requested = 0;	// “需要退出” 的全�
 // --help / -h 命令提供帮助信息展示
 // { 长选项名, 短选项字符, 参数名, 标志位, 帮助说明 }
 static const struct argp_option g_options[] = {
-	{"mode", 'm', "context|syscall|tcp_connect|msgqueue", 0, "监控模式"},
+	{"mode", 'm', "context|syscall|tcp_connect|msgqueue|mutexlock|preempt|schedule", 0, "监控模式"},
 	{"timeout", 't', "MILLISECONDS", 0, "ring buffer 轮询超时(毫秒)"},
 	{"enable", 'e', "0|1", 0, "是否启用监控(1=启用, 0=禁用)"},
 	{0}
@@ -53,10 +53,22 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 		else if (strcmp(arg, "msgqueue") == 0) {
 			opts->mode = APP_MODE_MSGQUEUE;
 		}
+		// 判断参数是否是 "mutexlock"
+		else if (strcmp(arg, "mutexlock") == 0) {
+			opts->mode = APP_MODE_MUTEXLOCK;
+		}
+		// 判断参数是否是 "preempt"
+		else if (strcmp(arg, "preempt") == 0) {
+			opts->mode = APP_MODE_PREEMPT;
+		}
+		// 判断参数是否是 "schedule"
+		else if (strcmp(arg, "schedule") == 0) {
+			opts->mode = APP_MODE_SCHEDULE;
+		}
 		// 都不是 → 非法参数
 		else {
 			// argp_error 会自动打印错误并退出程序
-			argp_error(state, "invalid mode: %s (use context|syscall|tcp_connect|msgqueue)", arg);
+			argp_error(state, "invalid mode: %s (use context|syscall|tcp_connect|msgqueue|mutexlock|preempt|schedule)", arg);
 		}
 		break;
 
@@ -201,6 +213,18 @@ const char *app_mode_to_string(enum app_mode mode)
 		// 如果是消息队列延迟模式 → 返回字符串 "msgqueue"
 		case APP_MODE_MSGQUEUE:
 			return "msgqueue";
+
+		// 如果是互斥锁延迟模式 → 返回字符串 "mutexlock"
+		case APP_MODE_MUTEXLOCK:
+			return "mutexlock";
+
+		// 如果是抢占延迟模式 → 返回字符串 "preempt"
+		case APP_MODE_PREEMPT:
+			return "preempt";
+
+		// 如果是调度延迟模式 → 返回字符串 "schedule"
+		case APP_MODE_SCHEDULE:
+			return "schedule";
 
 		// 其他非法值 → 返回 "unknown"
 		default:

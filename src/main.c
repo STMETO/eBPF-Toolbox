@@ -4,6 +4,9 @@
 #include "syscall_delay.h"
 #include "tcp_connect_delay.h"
 #include "msgqueue_delay.h"
+#include "mutexlock_delay.h"
+#include "preempt_delay.h"
+#include "schedule_delay.h"
 
 int main(int argc, char **argv)
 {
@@ -51,6 +54,21 @@ int main(int argc, char **argv)
         // 模式4：启动【消息队列延迟】监控
         case APP_MODE_MSGQUEUE:
             err = msgqueue_delay_run(opts.poll_timeout_ms, opts.enable);
+            break;
+
+        // 模式5：启动【互斥锁延迟】监控
+        case APP_MODE_MUTEXLOCK:
+            err = mutexlock_delay_run(opts.poll_timeout_ms, opts.enable);
+            break;
+
+        // 模式6：启动【抢占延迟】监控
+        case APP_MODE_PREEMPT:
+            err = preempt_delay_run(opts.poll_timeout_ms, opts.enable);
+            break;
+
+        // 模式7：启动【调度延迟】监控
+        case APP_MODE_SCHEDULE:
+            err = schedule_delay_run(opts.poll_timeout_ms, opts.enable);
             break;
 
         // 理论上不会走到这里（参数解析已保证 mode 合法）

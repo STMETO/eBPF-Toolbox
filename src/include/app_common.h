@@ -13,6 +13,9 @@ enum app_mode {
 	APP_MODE_SYSCALL,      	// 模式2：监控系统调用
 	APP_MODE_TCP_CONNECT,  	// 模式3：监控 TCP 建连延迟
 	APP_MODE_MSGQUEUE,     	// 模式4：监控消息队列延迟
+	APP_MODE_MUTEXLOCK,    	// 模式5：监控互斥锁延迟
+	APP_MODE_PREEMPT,      	// 模式6：监控抢占延迟
+	APP_MODE_SCHEDULE,     	// 模式7：监控调度延迟
 };
 
 /**
