@@ -12,6 +12,7 @@ enum app_mode {
 	APP_MODE_CONTEXT_SWITCH, // 模式1：监控进程上下文切换
 	APP_MODE_SYSCALL,      	// 模式2：监控系统调用
 	APP_MODE_TCP_CONNECT,  	// 模式3：监控 TCP 建连延迟
+	APP_MODE_MSGQUEUE,     	// 模式4：监控消息队列延迟
 };
 
 /**
