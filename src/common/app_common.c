@@ -11,7 +11,7 @@ static volatile sig_atomic_t g_exit_requested = 0;	// “需要退出” 的全�
 // --help / -h 命令提供帮助信息展示
 // { 长选项名, 短选项字符, 参数名, 标志位, 帮助说明 }
 static const struct argp_option g_options[] = {
-	{"mode", 'm', "context|syscall", 0, "监控模式"},
+	{"mode", 'm', "context|syscall|tcp_connect", 0, "监控模式"},
 	{"timeout", 't', "MILLISECONDS", 0, "ring buffer 轮询超时(毫秒)"},
 	{"enable", 'e', "0|1", 0, "是否启用监控(1=启用, 0=禁用)"},
 	{0}
@@ -45,10 +45,14 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 		else if (strcmp(arg, "syscall") == 0) {
 			opts->mode = APP_MODE_SYSCALL;
 		}
-		// 既不是 context 也不是 syscall → 非法参数
+		// 判断参数是否是 "tcp_connect"
+		else if (strcmp(arg, "tcp_connect") == 0) {
+			opts->mode = APP_MODE_TCP_CONNECT;
+		}
+		// 都不是 → 非法参数
 		else {
 			// argp_error 会自动打印错误并退出程序
-			argp_error(state, "invalid mode: %s (use context|syscall)", arg);
+			argp_error(state, "invalid mode: %s (use context|syscall|tcp_connect)", arg);
 		}
 		break;
 
@@ -185,7 +189,11 @@ const char *app_mode_to_string(enum app_mode mode)
 		// 如果是系统调用模式 → 返回字符串 "syscall"
 		case APP_MODE_SYSCALL:
 			return "syscall";
-		
+
+		// 如果是 TCP 建连延迟模式 → 返回字符串 "tcp_connect"
+		case APP_MODE_TCP_CONNECT:
+			return "tcp_connect";
+
 		// 其他非法值 → 返回 "unknown"
 		default:
 			return "unknown";

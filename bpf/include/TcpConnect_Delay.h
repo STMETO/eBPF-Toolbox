@@ -5,14 +5,20 @@
 // 引入公共类型定义头文件
 #include "common.h"
 
+#ifndef AF_INET
 #define AF_INET    2    // IPv4 地址协议簇常量
+#endif
+#ifndef AF_INET6
 #define AF_INET6   10   // IPv6 地址协议簇常量
+#endif
 
 // 最小延迟过滤阈值（单位：微秒），低于该值的事件不会上报
 // static const volatile 用于 BPF 全局变量，支持用户态配置
 static const volatile bpf_u64_t targ_min_us = 0;
 // 目标进程 TGID 过滤，0 表示监控所有进程
 static const volatile bpf_u32_t targ_tgid = 0;
+
+static const int ctrl_key = 0;
 
 // 进程数据结构体：记录 TCP 连接发起时的进程信息
 struct piddata {

@@ -11,6 +11,7 @@ enum app_mode {
 	APP_MODE_UNSET = 0,    	// 初始状态：未选择任何模式（必须用户指定）
 	APP_MODE_CONTEXT_SWITCH, // 模式1：监控进程上下文切换
 	APP_MODE_SYSCALL,      	// 模式2：监控系统调用
+	APP_MODE_TCP_CONNECT,  	// 模式3：监控 TCP 建连延迟
 };
 
 /**

@@ -4,12 +4,12 @@ OUTPUT := build
 # 编译器
 CLANG ?= clang
 CC ?= gcc
+AR ?= ar
 
 # ==============================
 # 第三方子模块路径
 # ==============================
 LIBBPF_SRC := $(abspath ./libbpf/src)
-
 BPFTOOL_SRC := $(abspath ./bpftool/src)
 BPFTOOL_OUTPUT := $(abspath $(OUTPUT)/bpftool)
 BPFTOOL := $(BPFTOOL_OUTPUT)/bootstrap/bpftool
@@ -37,9 +37,6 @@ endif
 # ==============================
 BPF_DIR      := bpf
 SRC_ROOT     := src
-SRC_PERF     := src/perf
-SRC_NET      := src/net
-SRC_COMMON   := src/common
 
 # ==============================
 # 包含路径
@@ -50,7 +47,6 @@ INCLUDES := \
 	-I$(BPFTOOL_OUTPUT)/bootstrap/libbpf/include \
 	-I$(LIBBPF_SRC)/../include/uapi \
 	-I$(BPF_DIR)/include \
-	-I$(SRC_COMMON) \
 	-I./src/include \
 	-I$(LIBBPF_SRC)/..
 
@@ -61,16 +57,10 @@ CFLAGS := -g -Wall
 LDFLAGS := -lelf -lz -pthread -lstdc++
 
 # ==============================
-# BPF 程序列表（与 bpf/perf/ 一一对应）
+# BPF 程序列表（自动扫描 bpf/ 下所有 *.bpf.c）
 # ==============================
-BPF_PERF_FILES := \
-	perf/ContextSwitch_Delay \
-	perf/SystemCall_Delay \
-	net/TcpConnect_Delay
-
-
-
-BPF_ALL := $(BPF_PERF_FILES)
+BPF_SRCS := $(shell find $(BPF_DIR) -type f -name '*.bpf.c' | sort)
+BPF_ALL := $(patsubst $(BPF_DIR)/%.bpf.c,%,$(BPF_SRCS))
 
 # 生成编译路径
 BPF_OBJS := $(addprefix $(OUTPUT)/, $(addsuffix .bpf.o, $(BPF_ALL)))
@@ -84,17 +74,13 @@ TARGET_PERF := test
 # ==============================
 # 用户态源文件
 # ==============================
-
-# 暂时只编译 net 下的 TcpConnect_Delay.c
-USER_PERF_SRCS := $(SRC_NET)/TcpConnect_Delay.c
-
-#USER_PERF_SRCS := $(wildcard $(SRC_PERF)/*.c)
-USER_COMMON_SRCS := $(wildcard $(SRC_COMMON)/*.c)
 USER_MAIN_SRC := $(SRC_ROOT)/main.c
+USER_SRCS := $(shell find $(SRC_ROOT) -type f -name '*.c' ! -path '$(SRC_ROOT)/include/*' | sort)
+USER_MODULE_SRCS := $(filter-out $(USER_MAIN_SRC),$(USER_SRCS))
 
-USER_PERF_OBJS := $(patsubst %.c, $(OUTPUT)/%.o, $(notdir $(USER_PERF_SRCS)))
-USER_COMMON_OBJS := $(patsubst %.c, $(OUTPUT)/%.o, $(notdir $(USER_COMMON_SRCS)))
-USER_MAIN_OBJ := $(OUTPUT)/main.o
+USER_MAIN_OBJ := $(OUTPUT)/$(USER_MAIN_SRC:.c=.o)
+USER_MODULE_OBJS := $(addprefix $(OUTPUT)/,$(USER_MODULE_SRCS:.c=.o))
+USER_MODULE_LIB := $(OUTPUT)/libapp.a
 
 # ==============================
 # Clang 系统头文件
@@ -126,7 +112,7 @@ clean:
 	$(Q)rm -rf $(OUTPUT) $(TARGET_PERF)
 
 $(OUTPUT):
-	$(Q)mkdir -p $@/perf $@/net $@/bpftool/bootstrap $@/libbpf $@/libbpf/include/uapi
+	$(Q)mkdir -p $@/bpftool/bootstrap $@/libbpf $@/libbpf/include/uapi
 
 ################################################################################
 # 编译依赖库
@@ -147,6 +133,7 @@ $(VMLINUX_H): $(VMLINUX_SRC) | $(OUTPUT)
 define BUILD_BPF
 $(OUTPUT)/$(1).bpf.o: $(BPF_DIR)/$(1).bpf.c $(VMLINUX_H) $(BPFTOOL)
 	$(call msg,BPF,$(1).bpf.c)
+	$(Q)mkdir -p $$(dir $$@)
 	$(Q)$$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
 		$$(INCLUDES) $$(CLANG_BPF_SYS_INCLUDES) \
 		-c $$< -o $$@.tmp
@@ -162,40 +149,30 @@ $(foreach bpf,$(BPF_ALL),$(eval $(call BUILD_BPF,$(bpf))))
 define BUILD_SKEL
 $(OUTPUT)/$(1).skel.h: $(OUTPUT)/$(1).bpf.o
 	$(call msg,SKEL,$(notdir $$@))
+	$(Q)mkdir -p $$(dir $$@)
 	$(Q)$(BPFTOOL) gen skeleton $$< > $$@
 endef
 
 $(foreach bpf,$(BPF_ALL),$(eval $(call BUILD_SKEL,$(bpf))))
 
 ################################################################################
-# 编译用户态 common
-$(OUTPUT)/%.o: $(SRC_COMMON)/%.c $(LIBBPF_OBJ) | $(OUTPUT)
-	$(call msg,CC,common/$(notdir $@))
-	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
-
+# 编译用户态代码（自动扫描 src/，排除 src/include）
 ################################################################################
-# 编译用户态 perf
-$(OUTPUT)/%.o: $(SRC_PERF)/%.c $(BPF_SKELS) $(LIBBPF_OBJ) | $(OUTPUT)
-	$(call msg,CC,perf/$(notdir $@))
-	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
-
-################################################################################
-# 编译 src/net/ 下的文件
-$(OUTPUT)/%.o: $(SRC_NET)/%.c $(BPF_SKELS) $(LIBBPF_OBJ) | $(OUTPUT)
-	$(call msg,CC,net/$(notdir $@))
-	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
-
-################################################################################
-# 编译用户态 main
-$(OUTPUT)/main.o: $(USER_MAIN_SRC) $(LIBBPF_OBJ) | $(OUTPUT)
-	$(call msg,CC,main.c)
+$(OUTPUT)/%.o: %.c $(BPF_SKELS) $(LIBBPF_OBJ) | $(OUTPUT)
+	$(call msg,CC,$<)
+	$(Q)mkdir -p $(dir $@)
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 ################################################################################
 # 链接最终程序
-$(TARGET_PERF): $(USER_MAIN_OBJ) $(USER_PERF_OBJS) $(USER_COMMON_OBJS) $(LIBBPF_OBJ)
+$(USER_MODULE_LIB): $(USER_MODULE_OBJS) | $(OUTPUT)
+	$(call msg,AR,$@)
+	$(Q)rm -f $@
+	$(Q)$(AR) rcs $@ $^
+
+$(TARGET_PERF): $(USER_MAIN_OBJ) $(USER_MODULE_LIB) $(LIBBPF_OBJ)
 	$(call msg,BINARY,$@)
-	$(Q)$(CC) $^ $(LDFLAGS) -o $@
+	$(Q)$(CC) $(USER_MAIN_OBJ) $(USER_MODULE_LIB) $(LIBBPF_OBJ) $(LDFLAGS) -o $@
 
 ################################################################################
 # 成功提示

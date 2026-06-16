@@ -1,7 +1,8 @@
 #include <stdio.h>
-#include "app_common.h"       
-#include "context_switch_delay.h" 
-#include "syscall_delay.h"       
+#include "app_common.h"
+#include "context_switch_delay.h"
+#include "syscall_delay.h"
+#include "tcp_connect_delay.h"       
 
 int main(int argc, char **argv)
 {
@@ -39,6 +40,11 @@ int main(int argc, char **argv)
         // 模式2：启动【系统调用延迟】监控
         case APP_MODE_SYSCALL:
             err = syscall_delay_run(opts.poll_timeout_ms, opts.enable);
+            break;
+
+        // 模式3：启动【TCP 建连延迟】监控
+        case APP_MODE_TCP_CONNECT:
+            err = tcp_connect_delay_run(opts.poll_timeout_ms, opts.enable);
             break;
 
         // 理论上不会走到这里（参数解析已保证 mode 合法）
