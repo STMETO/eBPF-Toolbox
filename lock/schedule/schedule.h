@@ -11,6 +11,12 @@
 
 #ifndef TASK_RUNNING
 #define TASK_RUNNING 0x0000
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int schedule_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif
 
 /*
@@ -69,5 +75,11 @@ struct Schedule_Delay_proc_schedule {
     bpf_u64_t delay;                                   // 调度延迟（纳秒）
     bpf_s8_t  proc_name[TASK_COMM_LEN];               // 进程名
 };
+
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int schedule_run(int poll_timeout_ms, bool enable);
+#endif
 
 #endif

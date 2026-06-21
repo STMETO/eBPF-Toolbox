@@ -31,4 +31,10 @@ struct MutexLock_Delay_event {
     bpf_s32_t contender_prio;          // 抢占者优先级
 };
 
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int mutexlock_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif

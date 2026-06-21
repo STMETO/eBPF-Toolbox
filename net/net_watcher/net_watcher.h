@@ -31,10 +31,22 @@ typedef bpf_u64_t u64;
 
 #ifndef AF_INET
 #define AF_INET 2
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int net_watcher_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif
 
 #ifndef AF_INET6
 #define AF_INET6 10 /* IP version 6	*/
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int net_watcher_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif
 
 #define TCP_SKB_CB(__skb) ((struct tcp_skb_cb *)&((__skb)->cb[0]))
@@ -264,4 +276,10 @@ struct LayerDelayInfo {
     float delay;     // 时延数据
     int layer_index; // 层索引
 };
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int net_watcher_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif /* __NETWATCHER_H */

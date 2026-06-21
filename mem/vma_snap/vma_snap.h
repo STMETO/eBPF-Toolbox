@@ -28,4 +28,10 @@ struct find_event_t {
 	bpf_u64_t vm_start;
 	bpf_u64_t vm_end;
 };
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int vma_snap_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif

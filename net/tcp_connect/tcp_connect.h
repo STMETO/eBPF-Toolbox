@@ -7,9 +7,21 @@
 
 #ifndef AF_INET
 #define AF_INET    2    // IPv4 地址协议簇常量
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int tcp_connect_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif
 #ifndef AF_INET6
 #define AF_INET6   10   // IPv6 地址协议簇常量
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int tcp_connect_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif
 
 // 最小延迟过滤阈值（单位：微秒），低于该值的事件不会上报
@@ -55,5 +67,11 @@ struct event {
 struct TcpConnect_Delay_ctrl {
     bpf_bool_t enable;    // 监控开关：true=开启监控  false=关闭监控
 };
+
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int tcp_connect_run(int poll_timeout_ms, bool enable);
+#endif
 
 #endif

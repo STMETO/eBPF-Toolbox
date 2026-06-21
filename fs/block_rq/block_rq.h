@@ -16,4 +16,10 @@ struct BlockRqIssue_event {
 	bpf_u64_t total_io;
 };
 
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int block_rq_issue_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif /* __BLOCK_RQ_ISSUE_H */

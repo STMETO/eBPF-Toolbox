@@ -34,4 +34,10 @@ struct MsgQueue_Delay_event {
     bpf_u64_t rcv_exit_time;    // 接收端离开内核时间戳（纳秒）
 };
 
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int msgqueue_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif

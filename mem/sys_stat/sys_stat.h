@@ -10,4 +10,10 @@ struct SysStat_event {
 	bpf_u64_t shmem, shmem_thps, pmdmapped, anon_thps, unstable_nfs, vmscan_write, vmscan_immediate;
 	bpf_u64_t diried, written, kernel_misc_reclaimable;
 };
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int sys_stat_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif

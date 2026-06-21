@@ -18,4 +18,10 @@ union combined_alloc_info {
 	};
 	bpf_u64_t bits;
 };
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int mem_leak_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif

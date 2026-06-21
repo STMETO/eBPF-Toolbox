@@ -26,4 +26,10 @@ struct ContextSwitch_Delay_event {
     bpf_u64_t delay;      // 切换耗时 = end_time - start_time
 };
 
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int context_switch_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif

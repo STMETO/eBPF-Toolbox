@@ -29,4 +29,10 @@ struct SystemCall_Delay_event {
     bpf_u32_t syscall_id;  // 系统调用号
     bpf_s8_t  comm[TASK_COMM_LEN]; // 进程名
 };
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int syscall_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif

@@ -16,4 +16,10 @@ struct Paf_event {
 	bpf_s32_t flag;
 };
 
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int paf_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif

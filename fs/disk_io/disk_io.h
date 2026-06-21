@@ -16,4 +16,10 @@ struct DiskIoVisit_event {
 	char comm[TASK_COMM_LEN];
 };
 
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int disk_io_visit_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif /* __DISK_IO_VISIT_H */

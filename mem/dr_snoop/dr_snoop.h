@@ -23,4 +23,10 @@ struct data_t {
 	char name[TASK_COMM_LEN];
 	bpf_u64_t vm_stat[NR_VM_ZONE_STAT_ITEMS];
 };
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int dr_snoop_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif

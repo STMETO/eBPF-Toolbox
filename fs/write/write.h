@@ -14,4 +14,10 @@ struct Write_event {
 	bpf_u64_t count;
 };
 
+/* 用户态入口 */
+#ifndef __BPF__
+#include <stdbool.h>
+int write_run(int poll_timeout_ms, bool enable);
+#endif
+
 #endif /* __WRITE_H */
