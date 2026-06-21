@@ -11,6 +11,8 @@
 build.log
 /build/
 /target/
+/lib/
 compile_commands.json
 .cache/
 .clangd
+test

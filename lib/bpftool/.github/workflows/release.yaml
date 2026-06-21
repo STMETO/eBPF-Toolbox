@@ -1,0 +1,183 @@
+name: build and release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag_ref:
+        description: 'Tag reference (e.g., v1.2.3)'
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.after || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  # https://github.com/llvm/llvm-project/releases/tag/llvmorg-15.0.0
+  LLVM_URL_PREFIX: https://github.com/llvm/llvm-project/releases/download/llvmorg-15.0.0
+  LLVM_arm64: clang+llvm-15.0.0-aarch64-linux-gnu
+  LLVM_amd64: clang+llvm-15.0.0-x86_64-linux-gnu-rhel-8.4
+  # Set the tag reference based on trigger type
+  TAG_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_ref || github.ref_name }}
+
+jobs:
+  validate-tag:
+    name: Validate tag exists (manual dispatch only)
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0  # Fetch all tags
+
+      - name: Check if tag exists
+        run: |
+          if ! git tag -l | grep -q "^${{ inputs.tag_ref }}$"; then
+            echo "Error: Tag '${{ inputs.tag_ref }}' does not exist in the repository"
+            echo "Available tags:"
+            git tag -l
+            exit 1
+          fi
+          echo "Tag '${{ inputs.tag_ref }}' found"
+
+  build:
+    name: Build static bpftool binary
+    runs-on: ubuntu-22.04
+    needs: [validate-tag]
+    if: always() && (needs.validate-tag.result == 'success' || needs.validate-tag.result == 'skipped')
+    env:
+      TARGETARCH: ${{ matrix.arch }}
+      FILE_STRING_ARCH_amd64: x86-64
+      FILE_STRING_ARCH_arm64: aarch64
+    strategy:
+      matrix:
+        arch: [arm64, amd64]
+
+    steps:
+      # amd64 needs the dependencies to build bpftool
+      - name: Install dependencies (amd64)
+        if: matrix.arch == 'amd64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libelf-dev libcap-dev libssl-dev
+
+      - name: Download and extract compiled LLVM release
+        env:
+          LLVM: ${{ env[format('LLVM_{0}', matrix.arch)] }}
+        run: |
+          curl -L -O "${{ env.LLVM_URL_PREFIX}}/${{ env.LLVM }}.tar.xz"
+          tar -xvf "${{ env.LLVM }}.tar.xz"
+
+      - name: Checkout bpftool code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+          # Create a new directory to avoid wiping out LLVM on bpftool checkout
+          path: 'bpftool'
+          # For manual dispatch, checkout the specific tag
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_ref || github.ref }}
+
+      - name: Build static bpftool natively for amd64
+        if: matrix.arch == 'amd64'
+        working-directory: 'bpftool'
+        env:
+          LLVM_PATH: ${{ env[format('LLVM_{0}', matrix.arch)] }}
+        run: |
+          EXTRA_LDFLAGS=-static \
+              LLVM_CONFIG="${GITHUB_WORKSPACE}/${{ env.LLVM_PATH }}/bin/llvm-config" \
+              LLVM_STRIP="${GITHUB_WORKSPACE}/${{ env.LLVM_PATH }}/bin/llvm-strip" \
+              HOSTAR="${GITHUB_WORKSPACE}/${{ env.LLVM_PATH }}/bin/llvm-ar" \
+              make -j -C src V=1
+          strip src/bpftool
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+        if: matrix.arch == 'arm64'
+        with:
+          platforms: arm64
+
+      # The emulated build leverages Docker and Ubuntu 22.04 container image
+      # distribution to have all the needed arm64 packages.
+      - name: Build static bpftool for arm64 with emulation
+        if: matrix.arch == 'arm64'
+        env:
+          LLVM_PATH: ${{ env[format('LLVM_{0}', matrix.arch)] }}
+        run:  |
+          docker run --platform linux/arm64 --rm -v $(pwd):/build ubuntu:22.04 \
+          bash -c "apt-get update && \
+                   apt-get install -y make pkg-config gcc libssl-dev \
+                       libelf-dev libcap-dev libstdc++-11-dev zlib1g-dev && \
+                   cd /build/bpftool && \
+                   EXTRA_LDFLAGS=-static \
+                       LLVM_CONFIG='/build/${{ env.LLVM_PATH }}/bin/llvm-config' \
+                       LLVM_STRIP='/build/${{ env.LLVM_PATH }}/bin/llvm-strip' \
+                       CLANG='/build/${{ env.LLVM_PATH }}/bin/clang' \
+                       make -j -C src V=1 && \
+                   strip src/bpftool"
+
+      - name: Test bpftool binary
+        working-directory: 'bpftool/src'
+        env:
+          ARCH: ${{ env[format('FILE_STRING_ARCH_{0}', matrix.arch)] }}
+        run: |
+          file ./bpftool | \
+              tee /dev/stderr | \
+              grep -q "${{ env.ARCH }}"
+          ./bpftool 2>&1 | grep -q Usage
+          ./bpftool -p version | \
+              tee /dev/stderr | \
+              jq --exit-status ".features | .llvm and .skeletons"
+          ldd ./bpftool 2>&1 | \
+              tee /dev/stderr | \
+              grep -q 'not a dynamic executable'
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ format('bpftool_{0}', matrix.arch) }}
+          path: bpftool/src/bpftool
+
+  draft-release:
+    name: Create a draft release
+    runs-on: ubuntu-22.04
+    needs: [build]
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts from build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+
+      - name: Rename binaries and compress
+        run: |
+          archive_amd64="bpftool-${{ env.TAG_REF }}-amd64.tar.gz"
+          archive_arm64="bpftool-${{ env.TAG_REF }}-arm64.tar.gz"
+          tar -C bpftool_amd64 -I 'gzip -9' -cvf "${archive_amd64}" bpftool
+          tar -C bpftool_arm64 -I 'gzip -9' -cvf "${archive_arm64}" bpftool
+          sha256sum "${archive_amd64}" > "${archive_amd64}.sha256sum"
+          sha256sum "${archive_arm64}" > "${archive_arm64}.sha256sum"
+
+      - name: Checkout bpftool and libbpf code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+          path: 'bpftool'
+          # For manual dispatch, checkout the specific tag
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_ref || github.ref }}
+
+      - name: Package source code including submodules
+        uses: qmonnet/git-archive-all-action@791fb850881cf58b1d1fcc9b06c01940080bba0a # v1.0.1
+        with:
+          output-files: bpftool-libbpf-${{ env.TAG_REF }}-sources.tar.gz
+          base-repo: bpftool
+
+      - name: Create draft release and add artifacts
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          draft: true
+          files: bpftool*
+          tag_name: ${{ env.TAG_REF }}
+          generate_release_notes: true
