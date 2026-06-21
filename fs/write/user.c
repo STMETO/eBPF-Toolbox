@@ -1,3 +1,7 @@
+/*
+ * fs/write/user.c — write 系统调用监控用户态运行器
+ */
+
 #include <errno.h>
 #include <stdio.h>
 #include <time.h>
@@ -7,25 +11,26 @@
 #include "common/cli.h"
 #include "common/types.h"
 #include "write.h"
-#include "write.h"
 #include "fs/write/skel.h"
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
-	const struct Write_event *e = data;
 	(void)ctx;
 	(void)data_sz;
 
+	const struct Write_event *e = data;
+
 	struct tm *tm;
 	char ts[32];
-	time_t t;
-
-	time(&t);
+	time_t t = (time_t)(e->timestamp_ns / 1000000000ULL);
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
-	printf("%-8s  %-7d %-7d %-7llu %-7llu\n",
-	       ts, e->pid, e->fd, e->real_count, e->count);
+	/* 每个字段带类型标签，real_count 为 -1 表示写失败 */
+	printf("TIME=%-8s  PID=%-8d  FD=%-4d  REQ=%-8lld  ACTUAL=%-8lld  COMM=%-16s  PATH=%s\n",
+	       ts, e->pid, e->fd,
+	       (long long)e->count, (long long)e->real_count, e->comm,
+	       e->path_name_[0] ? e->path_name_ : "(unknown)");
 	return 0;
 }
 
@@ -63,8 +68,9 @@ int write_run(int poll_timeout_ms, bool enable)
 		goto cleanup;
 	}
 
-	printf("%-8s  %-7s %-7s %-7s %-7s\n",
-	       "TIME", "PID", "FD", "REAL", "COUNT");
+	printf("%-12s %-10s %-6s %-12s %-12s %-18s %s\n",
+	       "TIME", "PID", "FD", "REQ(COUNT)", "ACTUAL(RET)", "COMM", "PATH");
+	printf("-------------------------------------------------------------------------------------\n");
 
 	while (!app_should_exit()) {
 		err = ring_buffer__poll(rb, poll_timeout_ms);
