@@ -15,7 +15,30 @@ enum app_mode {
 	APP_MODE_MSGQUEUE,     	// 模式4：监控消息队列延迟
 	APP_MODE_MUTEXLOCK,    	// 模式5：监控互斥锁延迟
 	APP_MODE_PREEMPT,      	// 模式6：监控抢占延迟
-	APP_MODE_SCHEDULE,     	// 模式7：监控调度延迟
+	APP_MODE_SCHEDULE,         // 模式7：监控调度延迟
+
+	// 文件系统监控 (5)
+	APP_MODE_FS_OPEN,          // 模式8：监控 open 系统调用
+	APP_MODE_FS_READ,          // 模式9：监控 read 系统调用
+	APP_MODE_FS_WRITE,         // 模式10：监控 write 系统调用
+	APP_MODE_DISK_IO_VISIT,    // 模式11：监控磁盘 I/O 访问
+	APP_MODE_BLOCK_RQ_ISSUE,   // 模式12：监控块设备 I/O 请求
+
+	// 内存监控 (11)
+	APP_MODE_PAF,              // 模式13：页面分配失败分析
+	APP_MODE_PR,               // 模式14：页面回收报告
+	APP_MODE_PROC_STAT,        // 模式15：进程内存状态
+	APP_MODE_SYS_STAT,         // 模式16：系统内存状态
+	APP_MODE_MEM_LEAK,         // 模式17：内存泄漏检测
+	APP_MODE_FRAG_INFO,        // 模式18：内存碎片分析
+	APP_MODE_NUMA_FRAG_INFO,   // 模式19：NUMA 碎片信息
+	APP_MODE_VMA_SNAP,         // 模式20：VMA 快照
+	APP_MODE_DR_SNOOP,         // 模式21：直接回收追踪
+	APP_MODE_OOM_KILLER,       // 模式22：OOM Killer 事件
+	APP_MODE_SLAB_RATE,        // 模式23：Slab 分配速率
+
+	// 网络监控 (1)
+	APP_MODE_NET_WATCHER,      // 模式24：网络协议栈监控
 };
 
 /**

@@ -30,17 +30,22 @@ $(error 未找到 vmlinux.h，请在 vmlinux/$(ARCH)/ 下放置 vmlinux_*.h)
 endif
 
 # ---- 5. 包含路径 ----
+BLAZESYM_DIR  := $(abspath ./blazesym)
+BLAZESYM_LIB  := $(BLAZESYM_DIR)/target/release/libblazesym_c.a
+
 INCLUDES := \
 	-I$(OUTPUT) \
 	-I$(BPFTOOL_OUTPUT)/bootstrap/libbpf/include \
 	-I$(LIBBPF_SRC)/../include/uapi \
 	-I$(BPF_DIR)/include \
 	-I$(SRC_ROOT)/include \
-	-I$(LIBBPF_SRC)/..
+	-I$(LIBBPF_SRC)/.. \
+	-I$(BLAZESYM_DIR)/capi/include
 
 # ---- 6. 编译参数 ----
 CFLAGS  := -g -Wall
-LDFLAGS := -lelf -lz -pthread -lstdc++
+LDFLAGS := -lelf -lz -pthread -lstdc++ -lrt -ldl -lpthread -lm
+LDFLAGS += -L$(BLAZESYM_DIR)/target/release -lblazesym_c
 
 CLANG_BPF_SYS_INCLUDES ?= $(shell $(CLANG) -v -E - </dev/null 2>&1 \
 	| sed -n '/<...> search starts here:/,/End of search list./{ s| \(/.*\)|-idirafter \1|p }')
@@ -147,9 +152,9 @@ $(MODULE_LIB): $(MODULE_OBJS)
 	$(Q)rm -f $@
 	$(Q)$(AR) rcs $@ $^
 
-$(TARGET): $(MAIN_OBJ) $(MODULE_LIB) $(LIBBPF_OBJ)
+$(TARGET): $(MAIN_OBJ) $(MODULE_LIB) $(LIBBPF_OBJ) $(BLAZESYM_LIB)
 	$(call msg,BINARY,$@)
-	$(Q)$(CC) $(MAIN_OBJ) $(MODULE_LIB) $(LIBBPF_OBJ) $(LDFLAGS) -o $@
+	$(Q)$(CC) $(MAIN_OBJ) $(MODULE_LIB) $(LIBBPF_OBJ) $(BLAZESYM_LIB) $(LDFLAGS) -o $@
 
 .DELETE_ON_ERROR:
 .SECONDARY:

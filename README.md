@@ -20,11 +20,47 @@ eBPF-Toolbox 是一套轻量级的系统监控工具，利用 eBPF 技术在内�
 | 抢占延迟 | `preempt` | tp_btf/kprobe | 监控进程被强制抢占的延迟，捕获 sched_switch 事件 |
 | 调度延迟 | `schedule` | tp_btf/tracepoint | 测量进程从唤醒到实际运行的调度延迟，统计系统全局数据 |
 
+### 文件系统监控
+
+| 模块 | 命令 | 类型 | 说明 |
+|------|------|------|------|
+| Open 系统调用 | `fs_open` | tracepoint | 监控 open 系统调用，输出文件名、fd、PID、进程名 |
+| Read 系统调用 | `fs_read` | kprobe | 监控 read 系统调用，输出 PID 和调用耗时 |
+| Write 系统调用 | `fs_write` | kprobe | 监控 write 系统调用，输出 PID、fd、写入字节数 |
+| 磁盘 I/O 访问 | `disk_io` | tracepoint | 监控磁盘 I/O 完成事件，统计设备/扇区/读写/计数 |
+| 块设备 I/O 请求 | `block_rq` | tracepoint | 监控块设备请求提交，按进程聚合 I/O 总量 |
+
+### 内存监控
+
+| 模块 | 命令 | 类型 | 说明 |
+|------|------|------|------|
+| 页面分配失败分析 | `paf` | kprobe | 监控 get_page_from_freelist，分析水位线和 GFP 标志 |
+| 页面回收报告 | `pr` | kprobe | 监控 shrink_page_list，追踪回收/写回各阶段 |
+| 进程内存状态 | `proc_stat` | kprobe | 监控 finish_task_switch，输出 VSZ/RSS/anon/file/shmem |
+| 系统内存状态 | `sys_stat` | kprobe | 监控系统全局内存：active/inactive/dirty/slab/shmem 等 |
+| 内存泄漏检测 | `mem_leak` | kprobe/uprobe | 内核态 kmalloc/kfree + 用户态 malloc/free，堆栈符号化 |
+| 内存碎片分析 | `frag_info` | kprobe | 伙伴系统碎片指数，zone/order 级别分析 |
+| NUMA 碎片信息 | `numa_frag` | kprobe | NUMA 节点维度的内存碎片信息 |
+| VMA 快照 | `vma_snap` | kprobe | 虚拟内存区域 find/insert 操作性能分析 |
+| 直接回收追踪 | `dr_snoop` | tracepoint | 直接内存回收延迟 + 空闲页数 |
+| OOM Killer 事件 | `oom_killer` | kprobe | 监控 oom_kill_process，输出触发/被杀进程信息 |
+| Slab 分配速率 | `slab_rate` | kprobe | 按 slab cache 名统计分配次数/字节 |
+
+### 网络监控
+
+| 模块 | 命令 | 类型 | 说明 |
+|------|------|------|------|
+| 网络协议栈监控 | `net_watcher` | multi | TCP 连接/包监控，支持 UDP/ICMP/DNS/MySQL/Redis/Netfilter/Drop 等 |
+
+
 ## 架构概览
 
 ```
 eBPF-Toolbox/
-├── bpf/                          # eBPF 内核态程序
+├── bpf/                          # eBPF 内核态程序（25 个模块）
+│   ├── fs/                       #   文件系统监测模块
+│   ├── mem/                      #   内存监测模块
+│   ├── net/                      #   网络监测模块（含 helper headers）
 │   ├── include/                  # BPF 共享头文件（数据结构定义）
 │   │   ├── common.h              #   公共类型定义（bpf_u64_t 等）
 │   │   ├── ContextSwitch_Delay.h
@@ -43,7 +79,10 @@ eBPF-Toolbox/
 │   │   └── Schedule_Delay.bpf.c
 │   └── net/                      # 网络类 BPF 程序
 │       └── TcpConnect_Delay.bpf.c
-├── src/                          # 用户态程序
+├── src/                          # 用户态程序（25 个模块）
+│   ├── fs/                       #   文件系统监测
+│   ├── mem/                      #   内存监测
+│   ├── net/                      #   网络监测
 │   ├── include/                  # 用户态头文件
 │   │   ├── app_common.h          #   公共枚举 & 配置声明
 │   │   ├── context_switch_delay.h

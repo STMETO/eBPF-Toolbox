@@ -7,6 +7,23 @@
 #include "mutexlock_delay.h"
 #include "preempt_delay.h"
 #include "schedule_delay.h"
+#include "open.h"
+#include "read.h"
+#include "write.h"
+#include "disk_io_visit.h"
+#include "block_rq_issue.h"
+#include "paf.h"
+#include "pr.h"
+#include "proc_stat.h"
+#include "sys_stat.h"
+#include "mem_leak.h"
+#include "frag_info.h"
+#include "numa_frag_info.h"
+#include "vma_snap.h"
+#include "dr_snoop.h"
+#include "oom_killer.h"
+#include "slab_rate.h"
+#include "net_watcher.h"
 
 int main(int argc, char **argv)
 {
