@@ -13,7 +13,6 @@
 #include "mem/slab_rate/slab_rate.h"
 #include "mem/frag_info/frag_info.h"
 #include "mem/numa_frag/numa_frag.h"
-#include "mem/vma_snap/vma_snap.h"
 #include "mem/dr_snoop/dr_snoop.h"
 #include "mem/mem_leak/mem_leak.h"
 #include "lock/context_switch/context_switch.h"
@@ -23,7 +22,6 @@
 #include "lock/preempt/preempt.h"
 #include "lock/schedule/schedule.h"
 #include "net/tcp_connect/tcp_connect.h"
-#include "net/net_watcher/net_watcher.h"
 
 int main(int argc, char **argv)
 {
@@ -76,8 +74,6 @@ int main(int argc, char **argv)
 		err = frag_info_run(opts.poll_timeout_ms, opts.enable); break;
 	case APP_MODE_NUMA_FRAG_INFO:
 		err = numa_frag_info_run(opts.poll_timeout_ms, opts.enable); break;
-	case APP_MODE_VMA_SNAP:
-		err = vma_snap_run(opts.poll_timeout_ms, opts.enable); break;
 	case APP_MODE_DR_SNOOP:
 		err = dr_snoop_run(opts.poll_timeout_ms, opts.enable); break;
 	case APP_MODE_OOM_KILLER:
@@ -86,8 +82,6 @@ int main(int argc, char **argv)
 		err = slab_rate_run(opts.poll_timeout_ms, opts.enable); break;
 	case APP_MODE_TCP_CONNECT:
 		err = tcp_connect_run(opts.poll_timeout_ms, opts.enable); break;
-	case APP_MODE_NET_WATCHER:
-		err = net_watcher_run(opts.poll_timeout_ms, opts.enable); break;
 	default:
 		fprintf(stderr, "未知模式\n"); return 1;
 	}

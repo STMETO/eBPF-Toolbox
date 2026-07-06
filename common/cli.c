@@ -11,7 +11,7 @@ static volatile sig_atomic_t g_exit_requested = 0;	// “需要退出” 的全�
 // --help / -h 命令提供帮助信息展示
 // { 长选项名, 短选项字符, 参数名, 标志位, 帮助说明 }
 static const struct argp_option g_options[] = {
-	{"mode", 'm', "context|syscall|tcp_connect|msgqueue|mutexlock|preempt|schedule|fs_open|fs_read|fs_write|disk_io|block_rq|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|vma_snap|dr_snoop|oom_killer|slab_rate|net_watcher", 0, "监控模式"},
+	{"mode", 'm', "context|syscall|tcp_connect|msgqueue|mutexlock|preempt|schedule|fs_open|fs_read|fs_write|disk_io|block_rq|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate", 0, "监控模式"},
 	{"timeout", 't', "MILLISECONDS", 0, "ring buffer 轮询超时(毫秒)"},
 	{"enable", 'e', "0|1", 0, "是否启用监控(1=启用, 0=禁用)"},
 	{0}
@@ -77,16 +77,14 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 			else if (strcmp(arg, "mem_leak") == 0) { opts->mode = APP_MODE_MEM_LEAK; }
 			else if (strcmp(arg, "frag_info") == 0) { opts->mode = APP_MODE_FRAG_INFO; }
 			else if (strcmp(arg, "numa_frag") == 0) { opts->mode = APP_MODE_NUMA_FRAG_INFO; }
-			else if (strcmp(arg, "vma_snap") == 0) { opts->mode = APP_MODE_VMA_SNAP; }
 			else if (strcmp(arg, "dr_snoop") == 0) { opts->mode = APP_MODE_DR_SNOOP; }
 			else if (strcmp(arg, "oom_killer") == 0) { opts->mode = APP_MODE_OOM_KILLER; }
 			else if (strcmp(arg, "slab_rate") == 0) { opts->mode = APP_MODE_SLAB_RATE; }
-			else if (strcmp(arg, "net_watcher") == 0) { opts->mode = APP_MODE_NET_WATCHER; }
 
 		// 都不是 → 非法参数
 		else {
 			// argp_error 会自动打印错误并退出程序
-			argp_error(state, "invalid mode: %s (use context|syscall|tcp_connect|msgqueue|mutexlock|preempt|schedule|fs_open|fs_read|fs_write|disk_io|block_rq|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|vma_snap|dr_snoop|oom_killer|slab_rate|net_watcher)", arg);
+			argp_error(state, "invalid mode: %s (use context|syscall|tcp_connect|msgqueue|mutexlock|preempt|schedule|fs_open|fs_read|fs_write|disk_io|block_rq|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate)", arg);
 		}
 		break;
 
@@ -255,11 +253,9 @@ const char *app_mode_to_string(enum app_mode mode)
 		case APP_MODE_MEM_LEAK:			return "mem_leak";
 		case APP_MODE_FRAG_INFO:		return "frag_info";
 		case APP_MODE_NUMA_FRAG_INFO:		return "numa_frag";
-		case APP_MODE_VMA_SNAP:			return "vma_snap";
 		case APP_MODE_DR_SNOOP:			return "dr_snoop";
 		case APP_MODE_OOM_KILLER:		return "oom_killer";
 		case APP_MODE_SLAB_RATE:		return "slab_rate";
-		case APP_MODE_NET_WATCHER:		return "net_watcher";
 
 		// 其他非法值 → 返回 "unknown"
 		default:

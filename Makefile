@@ -28,7 +28,6 @@ endif
 
 INCLUDES := \
 	-I. \
-	-Inet/net_watcher/proto \
 	-I$(OUTPUT) \
 	-I$(BPFTOOL_OUTPUT)/bootstrap/libbpf/include \
 	-I$(LIBBPF_SRC)/../include/uapi \

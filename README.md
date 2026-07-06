@@ -1,6 +1,6 @@
 # eBPF-Toolbox
 
-基于 eBPF 的 Linux 系统可观测性工具集，25 个监测模块，统一命令行接口。
+基于 eBPF 的 Linux 系统可观测性工具集，23 个监测模块，统一命令行接口。
 
 ## 架构
 
@@ -15,15 +15,14 @@ My_eBPF_Poj/
 ├── mem/                        # 内存监测
 │   ├── paf/ pr/ proc_stat/ sys_stat/
 │   ├── oom_killer/ slab_rate/
-│   ├── frag_info/ numa_frag/ vma_snap/
+│   ├── frag_info/ numa_frag/
 │   ├── dr_snoop/ mem_leak/
 ├── lock/                       # 同步/调度监测
 │   ├── context_switch/ syscall/
 │   ├── msgqueue/ mutexlock/
 │   ├── preempt/ schedule/
 ├── net/                        # 网络监测
-│   ├── tcp_connect/
-│   └── net_watcher/proto/      # 多协议支持
+│   └── tcp_connect/
 ├── common/                     # 基础设施
 │   ├── main.c                  # 统一入口
 │   ├── cli.c / cli.h           # 命令行+信号
@@ -51,14 +50,13 @@ make
 sudo ./test -m fs_read     -t 100 -e 1
 sudo ./test -m paf         -t 100 -e 1
 sudo ./test -m slab_rate   -t 100 -e 1
-sudo ./test -m net_watcher -t 100 -e 1
 ```
 
-## 所有模块 (25)
+## 所有模块 (23)
 
 | 类别 | 命令 |
 |------|------|
 | 调度/同步 | `context` `syscall` `msgqueue` `mutexlock` `preempt` `schedule` |
 | 文件系统 | `fs_open` `fs_read` `fs_write` `disk_io` `block_rq` |
-| 内存 | `paf` `pr` `proc_stat` `sys_stat` `mem_leak` `frag_info` `numa_frag` `vma_snap` `dr_snoop` `oom_killer` `slab_rate` |
-| 网络 | `tcp_connect` `net_watcher` |
+| 内存 | `paf` `pr` `proc_stat` `sys_stat` `mem_leak` `frag_info` `numa_frag` `dr_snoop` `oom_killer` `slab_rate` |
+| 网络 | `tcp_connect` |
