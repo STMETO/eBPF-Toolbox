@@ -9,7 +9,7 @@
 #include "common/cli.h"
 #include "common/types.h"
 #include "schedule.h"
-#include "lock/schedule/skel.h"
+#include "sched/schedule/skel.h"
 
 // 入口函数：运行「调度延迟监控」
 // poll_timeout_ms：map 轮询间隔（毫秒）

@@ -3,37 +3,48 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <arpa/inet.h>
 #include <bpf/libbpf.h>
 
 #include "common/cli.h"
 #include "common/types.h"
-#include "preempt.h"
-#include "lock/preempt/skel.h"
+#include "tcp_retransmit.h"
+#include "net/tcp_retransmit/skel.h"
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
-	const struct Preempt_Delay_event *e = data;
+	char saddr[INET6_ADDRSTRLEN] = {};
+	char daddr[INET6_ADDRSTRLEN] = {};
+	const struct TcpRetransmit_event *e = data;
 	(void)ctx;
 	(void)data_sz;
 
-	printf("PREV_PID: %-6d NEXT_PID: %-6d COMM: %-16s DURATION: %-8" PRIu64 " ns\n",
-	       e->prev_pid, e->next_pid, e->comm, e->duration);
+	if (e->af == AF_INET) {
+		inet_ntop(AF_INET,  &e->saddr_v4, saddr, sizeof(saddr));
+		inet_ntop(AF_INET,  &e->daddr_v4, daddr, sizeof(daddr));
+	} else if (e->af == AF_INET6) {
+		inet_ntop(AF_INET6, &e->saddr_v6, saddr, sizeof(saddr));
+		inet_ntop(AF_INET6, &e->daddr_v6, daddr, sizeof(daddr));
+	}
+
+	printf("PID: %-6d COMM: %-16s | %-16s:%-5d -> %-16s:%-5d | STATE: %d\n",
+	       e->pid, e->comm,
+	       saddr, ntohs(e->sport),
+	       daddr, ntohs(e->dport),
+	       e->state);
 
 	return 0;
 }
 
-// 入口函数：运行「抢占延迟监控」
-// poll_timeout_ms：ring buffer 轮询超时（毫秒）
-// enable：是否启用监控（true=启动，false=关闭）
-int preempt_run(int poll_timeout_ms, bool enable)
+int tcp_retransmit_run(int poll_timeout_ms, bool enable)
 {
-	struct preempt_bpf *skel = NULL;
+	struct tcp_retransmit_bpf *skel = NULL;
 	struct ring_buffer *rb = NULL;
-	struct Preempt_Delay_ctrl ctrl = {.enable = enable};
+	struct TcpRetransmit_ctrl ctrl = {.enable = enable};
 	const int key = 0;
 	int err = 0;
 
-	skel = preempt_bpf__open_and_load();
+	skel = tcp_retransmit_bpf__open_and_load();
 	if (!skel) {
 		fprintf(stderr, "打开BPF程序失败\n");
 		return 1;
@@ -53,18 +64,18 @@ int preempt_run(int poll_timeout_ms, bool enable)
 		goto cleanup;
 	}
 
-	err = preempt_bpf__attach(skel);
+	err = tcp_retransmit_bpf__attach(skel);
 	if (err) {
 		fprintf(stderr, "挂载BPF程序失败\n");
 		goto cleanup;
 	}
 
 	printf("=========================================\n");
-	printf("  抢占延迟监控已%s！\n", enable ? "启动" : "关闭");
+	printf("  TCP 重传监控已%s！\n", enable ? "启动" : "关闭");
 	printf("  按 Ctrl+C 退出\n");
 	printf("=========================================\n");
-	printf("PREV_PID NEXT_PID COMM             DURATION(ns)\n");
-	printf("-------------------------------------------------------\n");
+	printf("PID    COMM             SRC:PORT          -> DST:PORT           STATE\n");
+	printf("-------------------------------------------------------------------\n");
 
 	while (!app_should_exit()) {
 		err = ring_buffer__poll(rb, poll_timeout_ms);
@@ -80,6 +91,6 @@ int preempt_run(int poll_timeout_ms, bool enable)
 
 cleanup:
 	ring_buffer__free(rb);
-	preempt_bpf__destroy(skel);
+	tcp_retransmit_bpf__destroy(skel);
 	return err < 0 ? -err : 0;
 }

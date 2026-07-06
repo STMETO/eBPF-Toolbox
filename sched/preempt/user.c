@@ -7,45 +7,38 @@
 
 #include "common/cli.h"
 #include "common/types.h"
-#include "context_switch.h"
-#include "lock/context_switch/skel.h"
+#include "preempt.h"
+#include "sched/preempt/skel.h"
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
-	const struct ContextSwitch_Delay_event *e = data;
+	const struct Preempt_Delay_event *e = data;
 	(void)ctx;
 	(void)data_sz;
 
-	printf("进程切换延迟: %-8" PRIu64 " us | 开始: %-10" PRIu64 " | 结束: %-10" PRIu64 "\n",
-	       e->delay, e->start_time, e->end_time);
+	printf("PREV_PID: %-6d NEXT_PID: %-6d COMM: %-16s DURATION: %-8" PRIu64 " ns\n",
+	       e->prev_pid, e->next_pid, e->comm, e->duration);
 
 	return 0;
 }
 
-// 入口函数：运行「进程切换延迟监控」
+// 入口函数：运行「抢占延迟监控」
 // poll_timeout_ms：ring buffer 轮询超时（毫秒）
 // enable：是否启用监控（true=启动，false=关闭）
-int context_switch_run(int poll_timeout_ms, bool enable)
+int preempt_run(int poll_timeout_ms, bool enable)
 {
-	// BPF 程序骨架（自动生成的结构体）
-	struct context_switch_bpf *skel = NULL;
-	// 环形缓冲区：内核 → 用户态 传递事件
+	struct preempt_bpf *skel = NULL;
 	struct ring_buffer *rb = NULL;
-	// 控制结构体：存储 enable 开关，传给 eBPF
-	struct ContextSwitch_Delay_ctrl ctrl = {.enable = enable};
-	// BPF map 的 key 固定为 0
+	struct Preempt_Delay_ctrl ctrl = {.enable = enable};
 	const int key = 0;
-	// 错误码
 	int err = 0;
 
-	// 打开并加载 BPF 程序（自动生成的 API）
-	skel = context_switch_bpf__open_and_load();
+	skel = preempt_bpf__open_and_load();
 	if (!skel) {
 		fprintf(stderr, "打开BPF程序失败\n");
 		return 1;
 	}
 
-	// 更新 ctrl_map，告诉内核是否开启监控
 	err = bpf_map__update_elem(skel->maps.ctrl_map, &key, sizeof(key),
 				   &ctrl, sizeof(ctrl), BPF_ANY);
 	if (err < 0) {
@@ -53,7 +46,6 @@ int context_switch_run(int poll_timeout_ms, bool enable)
 		goto cleanup;
 	}
 
-	// 创建 ring buffer，用于内核发送事件给用户态
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
 	if (!rb) {
 		err = -ENOMEM;
@@ -61,21 +53,20 @@ int context_switch_run(int poll_timeout_ms, bool enable)
 		goto cleanup;
 	}
 
-	// 把 BPF 程序挂载到内核钩子点
-	err = context_switch_bpf__attach(skel);
+	err = preempt_bpf__attach(skel);
 	if (err) {
 		fprintf(stderr, "挂载BPF程序失败\n");
 		goto cleanup;
 	}
 
 	printf("=========================================\n");
-	printf("  进程切换延迟监控已%s！\n", enable ? "启动" : "关闭");
+	printf("  抢占延迟监控已%s！\n", enable ? "启动" : "关闭");
 	printf("  按 Ctrl+C 退出\n");
 	printf("=========================================\n");
+	printf("PREV_PID NEXT_PID COMM             DURATION(ns)\n");
+	printf("-------------------------------------------------------\n");
 
-	// 循环：检查是否收到退出信号（Ctrl+C）
 	while (!app_should_exit()) {
-		// 轮询 ring buffer，超时时间 poll_timeout_ms
 		err = ring_buffer__poll(rb, poll_timeout_ms);
 		if (err == -EINTR) {
 			err = 0;
@@ -88,7 +79,7 @@ int context_switch_run(int poll_timeout_ms, bool enable)
 	}
 
 cleanup:
-	ring_buffer__free(rb);         // 释放环形缓冲区
-	context_switch_bpf__destroy(skel); // 卸载 BPF 程序
-	return err < 0 ? -err : 0;     // 返回错误码（转正数）
+	ring_buffer__free(rb);
+	preempt_bpf__destroy(skel);
+	return err < 0 ? -err : 0;
 }

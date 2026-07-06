@@ -17,12 +17,15 @@ My_eBPF_Poj/
 │   ├── oom_killer/ slab_rate/
 │   ├── frag_info/ numa_frag/
 │   ├── dr_snoop/ mem_leak/
-├── lock/                       # 同步/调度监测
-│   ├── context_switch/ syscall/
-│   ├── msgqueue/ mutexlock/
-│   ├── preempt/ schedule/
-├── net/                        # 网络监测
-│   └── tcp_connect/
+├── sched/                       # 调度延迟监测
+│   ├── context_switch/ preempt/
+│   └── schedule/
+├── lock/                        # 同步/IPC 监测
+│   ├── syscall/ msgqueue/
+│   └── mutexlock/
+├── net/                         # 网络监测
+│   ├── tcp_connect/
+│   └── tcp_retransmit/
 ├── common/                     # 基础设施
 │   ├── main.c                  # 统一入口
 │   ├── cli.c / cli.h           # 命令行+信号
@@ -49,14 +52,16 @@ make
 # 运行
 sudo ./test -m fs_read     -t 100 -e 1
 sudo ./test -m paf         -t 100 -e 1
-sudo ./test -m slab_rate   -t 100 -e 1
+sudo ./test -m slab_rate       -t 100 -e 1
+sudo ./test -m tcp_retransmit -t 100 -e 1
 ```
 
 ## 所有模块 (23)
 
 | 类别 | 命令 |
 |------|------|
-| 调度/同步 | `context` `syscall` `msgqueue` `mutexlock` `preempt` `schedule` |
+| 调度延迟 | `context` `preempt` `schedule` |
+| 同步/IPC | `syscall` `msgqueue` `mutexlock` |
 | 文件系统 | `fs_open` `fs_read` `fs_write` `disk_io` `block_rq` |
 | 内存 | `paf` `pr` `proc_stat` `sys_stat` `mem_leak` `frag_info` `numa_frag` `dr_snoop` `oom_killer` `slab_rate` |
-| 网络 | `tcp_connect` |
+| 网络 | `tcp_connect` `tcp_retransmit` |
