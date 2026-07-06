@@ -11,7 +11,7 @@ static volatile sig_atomic_t g_exit_requested = 0;	// “需要退出” 的全�
 // --help / -h 命令提供帮助信息展示
 // { 长选项名, 短选项字符, 参数名, 标志位, 帮助说明 }
 static const struct argp_option g_options[] = {
-	{"mode", 'm', "context|syscall|tcp_monitor|msgqueue|mutexlock|preempt|fs_open|fs_read|fs_write|disk_io|block_rq|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate|udp_monitor", 0, "监控模式"},
+	{"mode", 'm', "context|syscall|tcp_monitor|msgqueue|mutexlock|preempt|fs_open|fs_read|fs_write|block_io|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate|udp_monitor", 0, "监控模式"},
 	{"timeout", 't', "MILLISECONDS", 0, "ring buffer 轮询超时(毫秒)"},
 	{"enable", 'e', "0|1", 0, "是否启用监控(1=启用, 0=禁用)"},
 	{"pid",   'p', "PID",     0, "目标进程 PID 过滤，0=全部" },
@@ -66,8 +66,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 			else if (strcmp(arg, "fs_open") == 0) { opts->mode = APP_MODE_FS_OPEN; }
 			else if (strcmp(arg, "fs_read") == 0) { opts->mode = APP_MODE_FS_READ; }
 			else if (strcmp(arg, "fs_write") == 0) { opts->mode = APP_MODE_FS_WRITE; }
-			else if (strcmp(arg, "disk_io") == 0) { opts->mode = APP_MODE_DISK_IO_VISIT; }
-			else if (strcmp(arg, "block_rq") == 0) { opts->mode = APP_MODE_BLOCK_RQ_ISSUE; }
+			else if (strcmp(arg, "block_io") == 0) { opts->mode = APP_MODE_BLOCK_IO; }
 			else if (strcmp(arg, "paf") == 0) { opts->mode = APP_MODE_PAF; }
 			else if (strcmp(arg, "pr") == 0) { opts->mode = APP_MODE_PR; }
 			else if (strcmp(arg, "proc_stat") == 0) { opts->mode = APP_MODE_PROC_STAT; }
@@ -83,7 +82,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 		// 都不是 → 非法参数
 		else {
 			// argp_error 会自动打印错误并退出程序
-			argp_error(state, "invalid mode: %s (use context|syscall|tcp_monitor|msgqueue|mutexlock|preempt|fs_open|fs_read|fs_write|disk_io|block_rq|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate|udp_monitor)", arg);
+			argp_error(state, "invalid mode: %s (use context|syscall|tcp_monitor|msgqueue|mutexlock|preempt|fs_open|fs_read|fs_write|block_io|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate|udp_monitor)", arg);
 		}
 		break;
 
@@ -254,8 +253,6 @@ const char *app_mode_to_string(enum app_mode mode)
 		case APP_MODE_FS_OPEN:			return "fs_open";
 		case APP_MODE_FS_READ:			return "fs_read";
 		case APP_MODE_FS_WRITE:			return "fs_write";
-		case APP_MODE_DISK_IO_VISIT:		return "disk_io";
-		case APP_MODE_BLOCK_RQ_ISSUE:		return "block_rq";
 		case APP_MODE_PAF:			return "paf";
 		case APP_MODE_PR:			return "pr";
 		case APP_MODE_PROC_STAT:		return "proc_stat";

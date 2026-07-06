@@ -7,6 +7,8 @@
 
 struct Open_ctrl {
 	bpf_bool_t enable;
+	bpf_u64_t  min_delay_ns;
+	bpf_s32_t  target_pid;
 };
 
 /*
@@ -25,9 +27,15 @@ struct Open_event {
 };
 
 /* 用户态入口 */
+struct Open_stats {
+	bpf_u64_t count, total_ns, max_ns;
+	bpf_s32_t max_pid;
+	bpf_s8_t  max_comm[TASK_COMM_LEN];
+};
+
 #ifndef __BPF__
 #include <stdbool.h>
-int open_run(int poll_timeout_ms, bool enable);
+int open_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t min_delay_ns);
 #endif
 
 #endif /* __OPEN_H */

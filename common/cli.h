@@ -20,8 +20,7 @@ enum app_mode {
 	APP_MODE_FS_OPEN,          // 模式8：监控 open 系统调用
 	APP_MODE_FS_READ,          // 模式9：监控 read 系统调用
 	APP_MODE_FS_WRITE,         // 模式10：监控 write 系统调用
-	APP_MODE_DISK_IO_VISIT,    // 模式11：监控磁盘 I/O 访问
-	APP_MODE_BLOCK_RQ_ISSUE,   // 模式12：监控块设备 I/O 请求
+    APP_MODE_BLOCK_IO,       // 磁盘 IO 延迟监控
 
 	// 内存监控 (10)
 	APP_MODE_PAF,              // 模式13：页面分配失败分析

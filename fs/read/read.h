@@ -7,6 +7,8 @@
 
 struct Read_ctrl {
 	bpf_bool_t enable;
+	bpf_u64_t  min_delay_ns;
+	bpf_s32_t  target_pid;
 };
 
 /*
@@ -31,9 +33,15 @@ struct Read_event {
 };
 
 /* 用户态入口 */
+struct Read_stats {
+	bpf_u64_t count, total_ns, max_ns;
+	bpf_s32_t max_pid;
+	bpf_s8_t  max_comm[TASK_COMM_LEN];
+};
+
 #ifndef __BPF__
 #include <stdbool.h>
-int read_run(int poll_timeout_ms, bool enable);
+int read_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t min_delay_ns);
 #endif
 
 #endif /* __READ_H */

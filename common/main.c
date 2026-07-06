@@ -3,8 +3,7 @@
 #include "fs/read/read.h"
 #include "fs/write/write.h"
 #include "fs/open/open.h"
-#include "fs/disk_io/disk_io.h"
-#include "fs/block_rq/block_rq.h"
+#include "fs/block_io/block_io.h"
 #include "mem/paf/paf.h"
 #include "mem/pr/pr.h"
 #include "mem/proc_stat/proc_stat.h"
@@ -49,15 +48,13 @@ int main(int argc, char **argv)
 	case APP_MODE_PREEMPT:
 		err = preempt_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
 	case APP_MODE_FS_OPEN:
-		err = open_run(opts.poll_timeout_ms, opts.enable); break;
+		err = open_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
 	case APP_MODE_FS_READ:
-		err = read_run(opts.poll_timeout_ms, opts.enable); break;
+		err = read_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
 	case APP_MODE_FS_WRITE:
-		err = write_run(opts.poll_timeout_ms, opts.enable); break;
-	case APP_MODE_DISK_IO_VISIT:
-		err = disk_io_visit_run(opts.poll_timeout_ms, opts.enable); break;
-	case APP_MODE_BLOCK_RQ_ISSUE:
-		err = block_rq_issue_run(opts.poll_timeout_ms, opts.enable); break;
+		err = write_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
+		case APP_MODE_BLOCK_IO:
+			err = block_io_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
 	case APP_MODE_PAF:
 		err = paf_run(opts.poll_timeout_ms, opts.enable); break;
 	case APP_MODE_PR:

@@ -32,6 +32,13 @@ struct {
 	__type(value, struct Open_ctrl);
 } ctrl_map SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, int);
+	__type(value, struct Open_stats);
+} stats_map SEC(".maps");
+
 /*
  * tid_map — 入口→出口临时存储
  *   key:   tid（线程ID，bpf_get_current_pid_tgid 低 32 位）
@@ -118,6 +125,13 @@ int openat_exit(struct trace_event_raw_sys_exit *ctx)
 	struct entry_data *entry = bpf_map_lookup_elem(&tid_map, &tid);
 	if (!entry)
 		return 0;  /* 没有对应入口记录（可能是开关中途开启），跳过 */
+
+		/* PID 过滤 */
+		if (ctrl->target_pid != 0 && entry->pid != ctrl->target_pid) {
+			bpf_map_delete_elem(&tid_map, &tid);
+			return 0;
+		}
+
 
 	/* 出口返回值：openat 成功返回 fd(≥0)，失败返回 -errno */
 	s64 ret = ctx->ret;

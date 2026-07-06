@@ -40,7 +40,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	return 0;
 }
 
-int read_run(int poll_timeout_ms, bool enable)
+int read_run(int poll_timeout_ms, bool enable,
+		    bpf_s32_t target_pid, bpf_u64_t min_delay_ns)
 {
 	struct read_bpf *skel = NULL;
 	struct ring_buffer *rb = NULL;

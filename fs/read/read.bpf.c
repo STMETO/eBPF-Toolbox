@@ -30,6 +30,13 @@ struct {
 	__type(value, struct Read_ctrl);
 } ctrl_map SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, int);
+	__type(value, struct Read_stats);
+} stats_map SEC(".maps");
+
 /*
  * tid_map — 入口→出口临时存储（key=tid，出口即删）
  *   入口暂存：pid + fd + comm + path
@@ -150,7 +157,14 @@ int read_exit(struct trace_event_raw_sys_exit *ctx)
 	/* 取出入口阶段暂存的数据 */
 	struct entry_data *entry = bpf_map_lookup_elem(&tid_map, &tid);
 	if (!entry)
+
+		/* PID 过滤 */
+		if (ctrl->target_pid != 0 && entry->pid != ctrl->target_pid) {
+			bpf_map_delete_elem(&tid_map, &tid);
+			return 0;
+		}
 		return 0;
+
 
 	struct Read_event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
 	if (!e) {
