@@ -47,7 +47,7 @@ int main(int argc, char **argv)
 	case APP_MODE_MUTEXLOCK:
 		err = mutexlock_run(opts.poll_timeout_ms, opts.enable); break;
 	case APP_MODE_PREEMPT:
-		err = preempt_run(opts.poll_timeout_ms, opts.enable); break;
+		err = preempt_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
 	case APP_MODE_FS_OPEN:
 		err = open_run(opts.poll_timeout_ms, opts.enable); break;
 	case APP_MODE_FS_READ:

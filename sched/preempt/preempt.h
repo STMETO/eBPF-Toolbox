@@ -4,34 +4,45 @@
 #include "common/types.h"
 
 /*
- * 抢占延迟监控 - 通用头文件
- * 作用：定义 内核态eBPF <-> 用户态程序 共用的结构体
- * 两边包含同一个头文件，保证数据结构完全一致
+ * 抢占延迟监控
+ *
+ * 探针：
+ *   tp_btf/sched_switch (preempt=true)  → 记录被抢占进程的全部上下文
+ *   kprobe/finish_task_switch.isra.0    → 计算延迟、过滤、发送
  */
 
-/*
- * 控制结构体
- * 用户态通过修改这个结构体，控制eBPF程序的开关
- */
-struct Preempt_Delay_ctrl {
-    bpf_bool_t enable;    // 监控开关：true=开启监控  false=关闭监控
+/* ── 控制结构体 ─────────────────────────────────────────── */
+struct Preempt_ctrl {
+	bpf_bool_t enable;
+	bpf_u64_t  min_delay_ns;   // 最小延迟阈值(ns)
+	bpf_s32_t  target_pid;     // 目标 PID，0=全部
 };
 
-/*
- * 抢占事件结构体
- * eBPF采集到进程被强制抢占的延迟后，通过ringbuf发送给用户态
- */
-struct Preempt_Delay_event {
-    bpf_s32_t prev_pid;                // 被抢占的进程 PID
-    bpf_s32_t next_pid;                // 抢占后运行的进程 PID
-    bpf_u64_t duration;                // 抢占延迟（纳秒）
-    bpf_s8_t  comm[TASK_COMM_LEN];     // 抢占后运行的进程名
+/* ── 输出事件 ────────────────────────────────────────────── */
+struct Preempt_event {
+	bpf_u64_t ts_ns;
+	bpf_u64_t delay_ns;
+	bpf_s32_t cpu;
+	bpf_s32_t prev_pid, next_pid;
+	bpf_s32_t prev_tgid, next_tgid;
+	bpf_s32_t prev_prio, next_prio;
+	bpf_s32_t prev_state;
+	bpf_s8_t  prev_comm[TASK_COMM_LEN];
+	bpf_s8_t  next_comm[TASK_COMM_LEN];
 };
 
-/* 用户态入口 */
+/* ── 全局统计 ────────────────────────────────────────────── */
+struct Preempt_stats {
+	bpf_u64_t count, total_ns, max_ns;
+	bpf_s32_t max_prev_pid, max_next_pid;
+	bpf_s8_t  max_prev_comm[TASK_COMM_LEN];
+	bpf_s8_t  max_next_comm[TASK_COMM_LEN];
+};
+
 #ifndef __BPF__
 #include <stdbool.h>
-int preempt_run(int poll_timeout_ms, bool enable);
+int preempt_run(int poll_timeout_ms, bool enable,
+		bpf_s32_t target_pid, bpf_u64_t min_delay_ns);
 #endif
 
 #endif

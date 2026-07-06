@@ -1,79 +1,126 @@
 #include <errno.h>
 #include <inttypes.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <bpf/libbpf.h>
 
 #include "common/cli.h"
 #include "common/types.h"
+#include "common/logger.h"
 #include "preempt.h"
 #include "sched/preempt/skel.h"
-#include "common/logger.h"
 
+static struct preempt_bpf *g_skel = NULL;
+
+/* ── Ctrl+C 统计 ─────────────────────────────────────────── */
+static void print_stats(void)
+{
+	if (!g_skel) return;
+	struct Preempt_stats stats = {};
+	int key = 0;
+	if (bpf_map__lookup_elem(g_skel->maps.stats_map, &key, sizeof(key),
+				 &stats, sizeof(stats), 0) || stats.count == 0)
+		return;
+
+	bpf_u64_t avg_ns = stats.total_ns / stats.count;
+	fprintf(stderr, "\n");
+	printf(C_CYAN C_BOLD "══════ 抢占延迟统计 ══════\n" C_RESET);
+	printf("  采样: %" PRIu64 " 次\n", stats.count);
+	printf("  平均: %" PRIu64 " ns  (", avg_ns);
+	log_col_ns(avg_ns, 100000, 1000000);
+	printf(")\n");
+	printf("  最大: %" PRIu64 " ns  (", stats.max_ns);
+	log_col_ns(stats.max_ns, 100000, 1000000);
+	printf(")\n");
+	printf("        prev: PID=%d (%s) → next: PID=%d (%s)\n",
+	       stats.max_prev_pid, stats.max_prev_comm,
+	       stats.max_next_pid, stats.max_next_comm);
+	printf(C_CYAN C_BOLD "════════════════════════════\n" C_RESET);
+}
+
+static void sig_handler(int sig) { (void)sig; print_stats(); _exit(0); }
+
+/* ── 事件回调 ────────────────────────────────────────────── */
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
-	const struct Preempt_Delay_event *e = data;
-	(void)ctx;
-	(void)data_sz;
+	const struct Preempt_event *e = data;
+	(void)ctx; (void)data_sz;
 
-	LOG("PREV_PID: %-6d NEXT_PID: %-6d COMM: %-16s | DURATION: %-8" PRIu64 " ns",
-	    e->prev_pid, e->next_pid, e->comm, e->duration);
+	const char *state_str;
+	switch (e->prev_state) {
+	case 0x0000: state_str = "RUNNING"; break;
+	case 0x0001: state_str = "INTR";    break;
+	case 0x0002: state_str = "UNINTR";  break;
+	case 0x0004: state_str = "STOPPED"; break;
+	case 0x0008: state_str = "TRACED";  break;
+	default:     state_str = "???";
+	}
 
+	LOG("CPU=%-2d | PREV: PID=%-6d TGID=%-6d %-16s PRIO=%-4d [%-6s] | "
+	    "NEXT: PID=%-6d TGID=%-6d %-16s PRIO=%-4d | ",
+	    e->cpu,
+	    e->prev_pid, e->prev_tgid, e->prev_comm, e->prev_prio, state_str,
+	    e->next_pid, e->next_tgid, e->next_comm, e->next_prio);
+
+	log_col_ns(e->delay_ns, 100000, 1000000);
+	printf(" [PREEMPT]\n");
 	return 0;
 }
 
-int preempt_run(int poll_timeout_ms, bool enable)
+/* ── 入口 ────────────────────────────────────────────────── */
+int preempt_run(int poll_timeout_ms, bool enable,
+		bpf_s32_t target_pid, bpf_u64_t min_delay_ns)
 {
 	struct preempt_bpf *skel = NULL;
 	struct ring_buffer *rb = NULL;
-	struct Preempt_Delay_ctrl ctrl = {.enable = enable};
 	const int key = 0;
 	int err = 0;
 
 	skel = preempt_bpf__open_and_load();
-	if (!skel) {
-		fprintf(stderr, "打开BPF程序失败\n");
-		return 1;
-	}
+	if (!skel) { fprintf(stderr, "打开BPF程序失败\n"); return 1; }
+	g_skel = skel;
 
+	struct Preempt_ctrl ctrl = {
+		.enable = enable, .min_delay_ns = min_delay_ns, .target_pid = target_pid,
+	};
 	err = bpf_map__update_elem(skel->maps.ctrl_map, &key, sizeof(key),
 				   &ctrl, sizeof(ctrl), BPF_ANY);
-	if (err < 0) {
-		fprintf(stderr, "设置控制开关失败: %s\n", strerror(-err));
-		goto cleanup;
-	}
+	if (err < 0) { fprintf(stderr, "设置控制开关失败: %s\n", strerror(-err)); goto cleanup; }
+
+	signal(SIGINT, sig_handler);
+	signal(SIGTERM, sig_handler);
 
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
-	if (!rb) {
-		err = -ENOMEM;
-		fprintf(stderr, "创建RingBuffer失败\n");
-		goto cleanup;
-	}
+	if (!rb) { err = -ENOMEM; fprintf(stderr, "创建RingBuffer失败\n"); goto cleanup; }
 
 	err = preempt_bpf__attach(skel);
-	if (err) {
-		fprintf(stderr, "挂载BPF程序失败\n");
-		goto cleanup;
-	}
+	if (err) { fprintf(stderr, "挂载BPF程序失败\n"); goto cleanup; }
 
 	log_banner("抢占延迟监控", enable);
-	LOG_HDR("%-8s %-8s %-16s %-13s", "PREV_PID", "NEXT_PID", "COMM", "DURATION");
+	if (target_pid)
+		LOG("过滤 PID=%d  阈值=%" PRIu64 " ns\n", target_pid, min_delay_ns);
+	else if (min_delay_ns)
+		LOG("过滤 ALL PID  阈值=%" PRIu64 " ns\n", min_delay_ns);
+	else
+		LOG("过滤 ALL PID  阈值=无\n");
+	LOG_HDR("%-3s  %-7s %-7s %-16s %-5s %-7s   %-7s %-7s %-16s %-5s   %-10s",
+		"CPU", "PREV", "TGID", "COMM", "PRIO", "STATE",
+		"NEXT", "TGID", "COMM", "PRIO", "DELAY");
 	LOG_SEP();
 
 	while (!app_should_exit()) {
 		err = ring_buffer__poll(rb, poll_timeout_ms);
-		if (err == -EINTR) {
-			err = 0;
-			break;
-		}
-		if (err < 0) {
-			fprintf(stderr, "轮询事件失败: %s\n", strerror(-err));
-			break;
-		}
+		if (err == -EINTR) { err = 0; break; }
+		if (err < 0) { fprintf(stderr, "轮询事件失败: %s\n", strerror(-err)); break; }
 	}
 
+	print_stats();
+
 cleanup:
+	g_skel = NULL;
 	ring_buffer__free(rb);
 	preempt_bpf__destroy(skel);
 	return err < 0 ? -err : 0;
