@@ -41,11 +41,11 @@ int main(int argc, char **argv)
 	case APP_MODE_CONTEXT_SWITCH:
 		err = context_switch_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
 	case APP_MODE_SYSCALL:
-		err = syscall_run(opts.poll_timeout_ms, opts.enable); break;
+		err = syscall_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
 	case APP_MODE_MSGQUEUE:
-		err = msgqueue_run(opts.poll_timeout_ms, opts.enable); break;
+		err = msgqueue_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
 	case APP_MODE_MUTEXLOCK:
-		err = mutexlock_run(opts.poll_timeout_ms, opts.enable); break;
+		err = mutexlock_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
 	case APP_MODE_PREEMPT:
 		err = preempt_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
 	case APP_MODE_FS_OPEN:

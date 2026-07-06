@@ -1,94 +1,89 @@
 #include <vmlinux.h>
-#include <bpf/bpf_helpers.h>		
+#include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
-
 #include "syscall.h"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
-
 const int ctrl_key = 0;
 
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
-    __uint(max_entries, 512);
-    __type(key, u64);
-    __type(value, u64);
-} SyscallEnterTime SEC(".maps");
+struct start_val { bpf_u64_t start_ts; bpf_s32_t syscall_id; };
 
 struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
-    __uint(max_entries, 10);
-    __type(key, u64);
-    __type(value, u64);
-} Events SEC(".maps");
-
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY); __uint(max_entries, 1);
+	__type(key, int); __type(value, struct start_val);
+} enter_map SEC(".maps");
 struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, u32);
-    __type(value, struct SystemCall_Delay_ctrl);
+	__uint(type, BPF_MAP_TYPE_ARRAY); __uint(max_entries, 1);
+	__type(key, int); __type(value, struct Syscall_ctrl);
 } ctrl_map SEC(".maps");
-
-
 struct {
-	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 256 * 1024);
+	__uint(type, BPF_MAP_TYPE_ARRAY); __uint(max_entries, 1);
+	__type(key, int); __type(value, struct Syscall_stats);
+} stats_map SEC(".maps");
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF); __uint(max_entries, 256 * 1024);
 } rb SEC(".maps");
 
-static inline struct SystemCall_Delay_ctrl *get_ctrl(void) {
-    struct SystemCall_Delay_ctrl *sc_ctrl;
-    sc_ctrl = bpf_map_lookup_elem(&ctrl_map, &ctrl_key);
-    if (!sc_ctrl || !sc_ctrl->enable) {
-        return NULL;
-    }
-    return sc_ctrl;
-}
+static inline struct Syscall_ctrl *get_ctrl(void)
+{ return bpf_map_lookup_elem(&ctrl_map, &ctrl_key); }
 
 SEC("tracepoint/raw_syscalls/sys_enter")
-int tracepoint__syscalls__sys_enter(struct trace_event_raw_sys_enter *args){
-	struct SystemCall_Delay_ctrl *sc_ctrl = get_ctrl();
-	if (!sc_ctrl) return 0;
-
-	u64 start_time = bpf_ktime_get_ns() / 1000;
-	u64 pid_tgid = bpf_get_current_pid_tgid();
-	u64 syscall_id = (u64)args->id;
-
-	bpf_map_update_elem(&Events, &pid_tgid, &syscall_id, BPF_ANY);
-	bpf_map_update_elem(&SyscallEnterTime, &pid_tgid, &start_time, BPF_ANY);
+int trace_enter(struct trace_event_raw_sys_enter *args)
+{
+	struct Syscall_ctrl *c = get_ctrl();
+	if (!c || !c->enable) return 0;
+	struct start_val *v = bpf_map_lookup_elem(&enter_map, &ctrl_key);
+	if (!v) return 0;
+	v->start_ts   = bpf_ktime_get_ns() / 1000;
+	v->syscall_id = (bpf_s32_t)args->id;
 	return 0;
 }
 
 SEC("tracepoint/raw_syscalls/sys_exit")
-int tracepoint__syscalls__sys_exit(struct trace_event_raw_sys_exit *args){
-	struct SystemCall_Delay_ctrl *sc_ctrl = get_ctrl();
-	if (!sc_ctrl) return 0;
+int trace_exit(struct trace_event_raw_sys_exit *args)
+{
+	struct Syscall_ctrl *c = get_ctrl();
+	if (!c || !c->enable) return 0;
+	struct start_val *v = bpf_map_lookup_elem(&enter_map, &ctrl_key);
+	if (!v || v->start_ts == 0) return 0;
 
-	u64 exit_time = bpf_ktime_get_ns() / 1000;
-	u64 pid_tgid = bpf_get_current_pid_tgid();
-	u64 syscall_id;
-	u64 start_time, delay;
+	bpf_u64_t now   = bpf_ktime_get_ns() / 1000;
+	bpf_u64_t delay = now - v->start_ts;
+	v->start_ts = 0;
 
-	u64 *val = bpf_map_lookup_elem(&SyscallEnterTime, &pid_tgid);
-	if (!val) return 0;
+	u64 pt      = bpf_get_current_pid_tgid();
+	bpf_s32_t pid = (bpf_s32_t)(pt >> 32);
+	bpf_s32_t tid = (bpf_s32_t)(pt & 0xFFFFFFFF);
 
-	start_time = *val;
-	delay = exit_time - start_time;
-	bpf_map_delete_elem(&SyscallEnterTime, &pid_tgid);
+	if (c->target_pid != 0 && pid != c->target_pid) return 0;
+	if (c->min_delay_ns && delay * 1000 < c->min_delay_ns) return 0;
 
-	u64 *val2 = bpf_map_lookup_elem(&Events, &pid_tgid);
-	if (!val2) return 0;
-
-	syscall_id = *val2;
-	bpf_map_delete_elem(&Events, &pid_tgid);
-
-	struct SystemCall_Delay_event *e;
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)	return 0;
-
-	e->pid = pid_tgid;      // 传递 64 位 ID 到用户态
-	e->delay = delay;
-	e->syscall_id = syscall_id;
+	struct Syscall_event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+	if (!e) return 0;
+	e->ts_ns      = now;
+	e->delay_ns   = delay;
+	e->pid        = pid;
+	e->tid        = tid;
+	e->syscall_id = v->syscall_id;
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+
+	/* 统计：在 ringbuf_submit 前读 e->comm */
+	struct Syscall_stats *st = bpf_map_lookup_elem(&stats_map, &ctrl_key);
+	if (!st) {
+		struct Syscall_stats z = {};
+		bpf_map_update_elem(&stats_map, &ctrl_key, &z, BPF_ANY);
+		st = bpf_map_lookup_elem(&stats_map, &ctrl_key);
+	}
+	if (st) {
+		st->count++;
+		st->total_ns += delay;
+		if (delay > st->max_ns) {
+			st->max_ns        = delay;
+			st->max_pid       = pid;
+			st->max_syscall_id = v->syscall_id;
+			__builtin_memcpy(st->max_comm, e->comm, TASK_COMM_LEN);
+		}
+	}
 
 	bpf_ringbuf_submit(e, 0);
 	return 0;
