@@ -266,7 +266,5 @@ cleanup:
 		blaze_symbolizer_free(symbolizer);
 	// 销毁BPF骨架，自动卸载探针、释放BPF map
 	mem_leak_bpf__destroy(skel);
-	// 统一转成正数错误码返回
 	return err < 0 ? -err : 0;
 }
-
