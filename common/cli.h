@@ -11,7 +11,7 @@ enum app_mode {
 	APP_MODE_UNSET = 0,    	// 初始状态：未选择任何模式（必须用户指定）
 	APP_MODE_CONTEXT_SWITCH, // 模式1：监控进程上下文切换
 	APP_MODE_SYSCALL,      	// 模式2：监控系统调用
-	APP_MODE_TCP_CONNECT,  	// 模式3：监控 TCP 建连延迟
+	APP_MODE_TCP_MONITOR,  	// 模式3：监控 TCP 建连延迟
 	APP_MODE_MSGQUEUE,     	// 模式4：监控消息队列延迟
 	APP_MODE_MUTEXLOCK,    	// 模式5：监控互斥锁延迟
 	APP_MODE_PREEMPT,      	// 模式6：监控抢占延迟
@@ -36,7 +36,7 @@ enum app_mode {
 	APP_MODE_SLAB_RATE,        // 模式22：Slab 分配速率
 
 	// 网络监控 (2)
-	APP_MODE_TCP_RETRANSMIT,   // 模式23：TCP 重传监控
+    APP_MODE_UDP_MONITOR,     // UDP 发送监控
 };
 
 /**

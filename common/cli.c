@@ -11,7 +11,7 @@ static volatile sig_atomic_t g_exit_requested = 0;	// “需要退出” 的全�
 // --help / -h 命令提供帮助信息展示
 // { 长选项名, 短选项字符, 参数名, 标志位, 帮助说明 }
 static const struct argp_option g_options[] = {
-	{"mode", 'm', "context|syscall|tcp_connect|msgqueue|mutexlock|preempt|fs_open|fs_read|fs_write|disk_io|block_rq|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate|tcp_retransmit", 0, "监控模式"},
+	{"mode", 'm', "context|syscall|tcp_monitor|msgqueue|mutexlock|preempt|fs_open|fs_read|fs_write|disk_io|block_rq|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate|udp_monitor", 0, "监控模式"},
 	{"timeout", 't', "MILLISECONDS", 0, "ring buffer 轮询超时(毫秒)"},
 	{"enable", 'e', "0|1", 0, "是否启用监控(1=启用, 0=禁用)"},
 	{"pid",   'p', "PID",     0, "目标进程 PID 过滤，0=全部" },
@@ -47,9 +47,9 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 		else if (strcmp(arg, "syscall") == 0) {
 			opts->mode = APP_MODE_SYSCALL;
 		}
-		// 判断参数是否是 "tcp_connect"
-		else if (strcmp(arg, "tcp_connect") == 0) {
-			opts->mode = APP_MODE_TCP_CONNECT;
+		// 判断参数是否是 "tcp_monitor"
+		else if (strcmp(arg, "tcp_monitor") == 0) {
+			opts->mode = APP_MODE_TCP_MONITOR;
 		}
 		// 判断参数是否是 "msgqueue"
 		else if (strcmp(arg, "msgqueue") == 0) {
@@ -78,12 +78,12 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 			else if (strcmp(arg, "dr_snoop") == 0) { opts->mode = APP_MODE_DR_SNOOP; }
 			else if (strcmp(arg, "oom_killer") == 0) { opts->mode = APP_MODE_OOM_KILLER; }
 			else if (strcmp(arg, "slab_rate") == 0) { opts->mode = APP_MODE_SLAB_RATE; }
-				else if (strcmp(arg, "tcp_retransmit") == 0) { opts->mode = APP_MODE_TCP_RETRANSMIT; }
+				else if (strcmp(arg, "udp_monitor") == 0) { opts->mode = APP_MODE_UDP_MONITOR; }
 
 		// 都不是 → 非法参数
 		else {
 			// argp_error 会自动打印错误并退出程序
-			argp_error(state, "invalid mode: %s (use context|syscall|tcp_connect|msgqueue|mutexlock|preempt|fs_open|fs_read|fs_write|disk_io|block_rq|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate|tcp_retransmit)", arg);
+			argp_error(state, "invalid mode: %s (use context|syscall|tcp_monitor|msgqueue|mutexlock|preempt|fs_open|fs_read|fs_write|disk_io|block_rq|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate|udp_monitor)", arg);
 		}
 		break;
 
@@ -235,9 +235,9 @@ const char *app_mode_to_string(enum app_mode mode)
 		case APP_MODE_SYSCALL:
 			return "syscall";
 
-		// 如果是 TCP 建连延迟模式 → 返回字符串 "tcp_connect"
-		case APP_MODE_TCP_CONNECT:
-			return "tcp_connect";
+		// 如果是 TCP 建连延迟模式 → 返回字符串 "tcp_monitor"
+		case APP_MODE_TCP_MONITOR:
+			return "tcp_monitor";
 
 		// 如果是消息队列延迟模式 → 返回字符串 "msgqueue"
 		case APP_MODE_MSGQUEUE:
@@ -266,7 +266,7 @@ const char *app_mode_to_string(enum app_mode mode)
 		case APP_MODE_DR_SNOOP:			return "dr_snoop";
 		case APP_MODE_OOM_KILLER:		return "oom_killer";
 		case APP_MODE_SLAB_RATE:		return "slab_rate";
-		case APP_MODE_TCP_RETRANSMIT:		return "tcp_retransmit";
+		case APP_MODE_UDP_MONITOR:		return "udp_monitor";
 
 		// 其他非法值 → 返回 "unknown"
 		default:

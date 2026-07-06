@@ -20,8 +20,8 @@
 #include "lock/mutexlock/mutexlock.h"
 #include "sched/context_switch/context_switch.h"
 #include "sched/preempt/preempt.h"
-#include "net/tcp_connect/tcp_connect.h"
-#include "net/tcp_retransmit/tcp_retransmit.h"
+#include "net/tcp_monitor/tcp_monitor.h"
+#include "net/udp_monitor/udp_monitor.h"
 
 int main(int argc, char **argv)
 {
@@ -78,10 +78,12 @@ int main(int argc, char **argv)
 		err = oom_killer_run(opts.poll_timeout_ms, opts.enable); break;
 	case APP_MODE_SLAB_RATE:
 		err = slab_rate_run(opts.poll_timeout_ms, opts.enable); break;
-	case APP_MODE_TCP_CONNECT:
-		err = tcp_connect_run(opts.poll_timeout_ms, opts.enable); break;
-	case APP_MODE_TCP_RETRANSMIT:
-		err = tcp_retransmit_run(opts.poll_timeout_ms, opts.enable); break;
+	case APP_MODE_TCP_MONITOR:
+		err = tcp_monitor_run(opts.poll_timeout_ms, opts.enable,
+				     opts.target_pid, opts.min_delay_ns); break;
+	case APP_MODE_UDP_MONITOR:
+		err = udp_monitor_run(opts.poll_timeout_ms, opts.enable,
+				     opts.target_pid, opts.min_delay_ns); break;
 	default:
 		fprintf(stderr, "未知模式\n"); return 1;
 	}
