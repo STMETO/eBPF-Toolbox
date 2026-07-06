@@ -7,6 +7,7 @@
 #include "proc_stat.h"
 #include "proc_stat.h"
 #include "mem/proc_stat/skel.h"
+#include "common/logger.h"
 
 /**
  * ringbuf 事件回调处理函数

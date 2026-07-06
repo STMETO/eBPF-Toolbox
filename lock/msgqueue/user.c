@@ -9,6 +9,7 @@
 #include "common/types.h"
 #include "msgqueue.h"
 #include "lock/msgqueue/skel.h"
+#include "common/logger.h"
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
@@ -76,13 +77,10 @@ int msgqueue_run(int poll_timeout_ms, bool enable)
 	err = msgqueue_bpf__attach(skel);
 	if (err) {
 		fprintf(stderr, "挂载BPF程序失败\n");
+	log_banner("消息队列延迟监控", enable);
 		goto cleanup;
 	}
 
-	printf("=========================================\n");
-	printf("  消息队列延迟监控已%s！\n", enable ? "启动" : "关闭");
-	printf("  按 Ctrl+C 退出\n");
-	printf("=========================================\n");
 	printf("SEND_PID RCV_PID MQDES MSG_LEN PRIO | "
 	       "SEND_DELAY(ns) RCV_DELAY(ns) TOTAL_DELAY(ns)\n");
 	printf("-------------------------------------------------------"

@@ -10,6 +10,7 @@
 #include "common/types.h"
 #include "tcp_retransmit.h"
 #include "net/tcp_retransmit/skel.h"
+#include "common/logger.h"
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
@@ -67,13 +68,10 @@ int tcp_retransmit_run(int poll_timeout_ms, bool enable)
 	err = tcp_retransmit_bpf__attach(skel);
 	if (err) {
 		fprintf(stderr, "挂载BPF程序失败\n");
+	log_banner("TCP 重传监控", enable);
 		goto cleanup;
 	}
 
-	printf("=========================================\n");
-	printf("  TCP 重传监控已%s！\n", enable ? "启动" : "关闭");
-	printf("  按 Ctrl+C 退出\n");
-	printf("=========================================\n");
 	printf("PID    COMM             SRC:PORT          -> DST:PORT           STATE\n");
 	printf("-------------------------------------------------------------------\n");
 

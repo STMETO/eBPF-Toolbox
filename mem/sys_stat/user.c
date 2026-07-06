@@ -12,6 +12,7 @@
 #include "sys_stat.h"
 #include "sys_stat.h"
 #include "mem/sys_stat/skel.h"
+#include "common/logger.h"
 
 /**
  * ringbuf事件回调函数

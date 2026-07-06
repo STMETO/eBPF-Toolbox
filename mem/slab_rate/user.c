@@ -10,6 +10,7 @@
 #include "slab_rate.h"
 #include "slab_rate.h"
 #include "mem/slab_rate/skel.h"
+#include "common/logger.h"
 
 // 每次刷新只展示占用内存TOP20的slab缓存
 #define OUTPUT_ROWS 20

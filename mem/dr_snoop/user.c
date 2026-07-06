@@ -17,6 +17,7 @@
 #include "common/types.h"
 #include "dr_snoop.h"
 #include "mem/dr_snoop/skel.h"
+#include "common/logger.h"
 
 #define KALLSYMS_PATH "/proc/kallsyms"		// /proc/kallsyms：内核符号表文件，用于读取全局变量虚拟地址
 #define VM_STAT_SYMBOL "vm_stat"			// 要查找的内核全局变量名：整机内存统计结构体 vm_stat

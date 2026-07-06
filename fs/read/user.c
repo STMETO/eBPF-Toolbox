@@ -17,6 +17,7 @@
 #include "common/types.h"
 #include "read.h"
 #include "fs/read/skel.h"
+#include "common/logger.h"
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {

@@ -7,6 +7,7 @@
 #include "common/types.h"   
 #include "numa_frag.h"      
 #include "mem/numa_frag/skel.h"
+#include "common/logger.h"
 
 /**
  * @brief NUMA节点信息采集主运行入口函数

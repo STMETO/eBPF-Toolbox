@@ -9,6 +9,7 @@
 #include "frag_info.h"
 #include "frag_info.h"
 #include "mem/frag_info/skel.h"
+#include "common/logger.h"
 
 // 排序回调：用于order_entry数组排序，先按zone地址、再按页order升序
 static int compare_entries(const void *a, const void *b);

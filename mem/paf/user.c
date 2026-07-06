@@ -8,6 +8,7 @@
 #include "paf.h"              
 #include "paf.h"              
 #include "mem/paf/skel.h"      
+#include "common/logger.h"
 
 // 前置函数声明：解析并打印GFP分配掩码标识
 static void print_flag_modifiers(int flag);

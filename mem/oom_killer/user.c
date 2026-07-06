@@ -7,6 +7,7 @@
 #include "oom_killer.h"        
 #include "oom_killer.h"      
 #include "mem/oom_killer/skel.h" 
+#include "common/logger.h"
 
 /**
  * @brief RingBuffer事件回调函数，内核推送OOM事件后由libbpf自动调用

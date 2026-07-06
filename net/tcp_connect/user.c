@@ -13,6 +13,7 @@
 #include "common/types.h"
 #include "tcp_connect.h"
 #include "net/tcp_connect/skel.h"
+#include "common/logger.h"
 
 /*
  * 解析并打印事件
@@ -92,6 +93,7 @@ int tcp_connect_run(int poll_timeout_ms, bool enable)
 	err = tcp_connect_bpf__attach(skel);
 	if (err) {
 		fprintf(stderr, "Failed to attach BPF program\n");
+	log_banner("TCP 建连延迟监控", enable);
 		goto cleanup;
 	}
 
@@ -105,10 +107,6 @@ int tcp_connect_run(int poll_timeout_ms, bool enable)
 	}
 
 	/* 开始监听 */
-	printf("=========================================\n");
-	printf("  TCP 建连延迟监控已%s！\n", enable ? "启动" : "关闭");
-	printf("  按 Ctrl+C 退出\n");
-	printf("=========================================\n");
 	while (!app_should_exit()) {
 		err = perf_buffer__poll(pb, poll_timeout_ms);
 		if (err == -EINTR) {

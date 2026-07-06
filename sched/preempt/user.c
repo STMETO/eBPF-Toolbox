@@ -9,6 +9,7 @@
 #include "common/types.h"
 #include "preempt.h"
 #include "sched/preempt/skel.h"
+#include "common/logger.h"
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
@@ -16,15 +17,12 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	(void)ctx;
 	(void)data_sz;
 
-	printf("PREV_PID: %-6d NEXT_PID: %-6d COMM: %-16s DURATION: %-8" PRIu64 " ns\n",
-	       e->prev_pid, e->next_pid, e->comm, e->duration);
+	LOG("PREV_PID: %-6d NEXT_PID: %-6d COMM: %-16s | DURATION: %-8" PRIu64 " ns",
+	    e->prev_pid, e->next_pid, e->comm, e->duration);
 
 	return 0;
 }
 
-// 入口函数：运行「抢占延迟监控」
-// poll_timeout_ms：ring buffer 轮询超时（毫秒）
-// enable：是否启用监控（true=启动，false=关闭）
 int preempt_run(int poll_timeout_ms, bool enable)
 {
 	struct preempt_bpf *skel = NULL;
@@ -59,12 +57,9 @@ int preempt_run(int poll_timeout_ms, bool enable)
 		goto cleanup;
 	}
 
-	printf("=========================================\n");
-	printf("  抢占延迟监控已%s！\n", enable ? "启动" : "关闭");
-	printf("  按 Ctrl+C 退出\n");
-	printf("=========================================\n");
-	printf("PREV_PID NEXT_PID COMM             DURATION(ns)\n");
-	printf("-------------------------------------------------------\n");
+	log_banner("抢占延迟监控", enable);
+	LOG_HDR("%-8s %-8s %-16s %-13s", "PREV_PID", "NEXT_PID", "COMM", "DURATION");
+	LOG_SEP();
 
 	while (!app_should_exit()) {
 		err = ring_buffer__poll(rb, poll_timeout_ms);

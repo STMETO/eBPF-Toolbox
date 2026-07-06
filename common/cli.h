@@ -15,7 +15,6 @@ enum app_mode {
 	APP_MODE_MSGQUEUE,     	// 模式4：监控消息队列延迟
 	APP_MODE_MUTEXLOCK,    	// 模式5：监控互斥锁延迟
 	APP_MODE_PREEMPT,      	// 模式6：监控抢占延迟
-	APP_MODE_SCHEDULE,         // 模式7：监控调度延迟
 
 	// 文件系统监控 (5)
 	APP_MODE_FS_OPEN,          // 模式8：监控 open 系统调用
@@ -47,7 +46,9 @@ enum app_mode {
 struct app_options {
 	enum app_mode mode;         // 运行模式（必须指定）
 	int poll_timeout_ms;        // ring buffer 轮询超时时间（毫秒）
-	bool enable;                // 是否启用监控功能
+	bool enable;
+		int target_pid;
+		int min_delay_ns;
 };
 
 /**

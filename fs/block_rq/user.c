@@ -18,6 +18,7 @@
 #include "common/types.h"
 #include "block_rq.h"
 #include "fs/block_rq/skel.h"
+#include "common/logger.h"
 
 /* 上下文：ringbuf 回调中需要访问 io_size_map fd 做 PERCPU 聚合 */
 struct event_ctx {

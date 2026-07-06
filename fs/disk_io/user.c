@@ -15,6 +15,7 @@
 #include "common/types.h"
 #include "disk_io.h"
 #include "fs/disk_io/skel.h"
+#include "common/logger.h"
 
 struct event_ctx {
 	int io_map_fd;

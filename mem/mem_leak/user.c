@@ -13,6 +13,7 @@
 #include "mem_leak.h"
 #include "mem_leak.h"
 #include "mem/mem_leak/skel.h"
+#include "common/logger.h"
 
 #define PERF_MAX_STACK_DEPTH 127
 #define STACK_MAP_MAX_ENTRIES 10240

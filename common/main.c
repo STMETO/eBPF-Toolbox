@@ -20,7 +20,6 @@
 #include "lock/mutexlock/mutexlock.h"
 #include "sched/context_switch/context_switch.h"
 #include "sched/preempt/preempt.h"
-#include "sched/schedule/schedule.h"
 #include "net/tcp_connect/tcp_connect.h"
 #include "net/tcp_retransmit/tcp_retransmit.h"
 
@@ -40,7 +39,7 @@ int main(int argc, char **argv)
 
 	switch (opts.mode) {
 	case APP_MODE_CONTEXT_SWITCH:
-		err = context_switch_run(opts.poll_timeout_ms, opts.enable); break;
+		err = context_switch_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
 	case APP_MODE_SYSCALL:
 		err = syscall_run(opts.poll_timeout_ms, opts.enable); break;
 	case APP_MODE_MSGQUEUE:
@@ -49,8 +48,6 @@ int main(int argc, char **argv)
 		err = mutexlock_run(opts.poll_timeout_ms, opts.enable); break;
 	case APP_MODE_PREEMPT:
 		err = preempt_run(opts.poll_timeout_ms, opts.enable); break;
-	case APP_MODE_SCHEDULE:
-		err = schedule_run(opts.poll_timeout_ms, opts.enable); break;
 	case APP_MODE_FS_OPEN:
 		err = open_run(opts.poll_timeout_ms, opts.enable); break;
 	case APP_MODE_FS_READ:

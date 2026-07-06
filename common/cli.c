@@ -11,9 +11,11 @@ static volatile sig_atomic_t g_exit_requested = 0;	// “需要退出” 的全�
 // --help / -h 命令提供帮助信息展示
 // { 长选项名, 短选项字符, 参数名, 标志位, 帮助说明 }
 static const struct argp_option g_options[] = {
-	{"mode", 'm', "context|syscall|tcp_connect|msgqueue|mutexlock|preempt|schedule|fs_open|fs_read|fs_write|disk_io|block_rq|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate|tcp_retransmit", 0, "监控模式"},
+	{"mode", 'm', "context|syscall|tcp_connect|msgqueue|mutexlock|preempt|fs_open|fs_read|fs_write|disk_io|block_rq|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate|tcp_retransmit", 0, "监控模式"},
 	{"timeout", 't', "MILLISECONDS", 0, "ring buffer 轮询超时(毫秒)"},
 	{"enable", 'e', "0|1", 0, "是否启用监控(1=启用, 0=禁用)"},
+	{"pid",   'p', "PID",     0, "目标进程 PID 过滤，0=全部" },
+	{"delay", 'd', "NANOSEC", 0, "最小延迟阈值(纳秒)，低于此值不上报" },
 	{0}
 };
 
@@ -61,10 +63,6 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 		else if (strcmp(arg, "preempt") == 0) {
 			opts->mode = APP_MODE_PREEMPT;
 		}
-		// 判断参数是否是 "schedule"
-		else if (strcmp(arg, "schedule") == 0) {
-			opts->mode = APP_MODE_SCHEDULE;
-		}
 			else if (strcmp(arg, "fs_open") == 0) { opts->mode = APP_MODE_FS_OPEN; }
 			else if (strcmp(arg, "fs_read") == 0) { opts->mode = APP_MODE_FS_READ; }
 			else if (strcmp(arg, "fs_write") == 0) { opts->mode = APP_MODE_FS_WRITE; }
@@ -85,7 +83,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 		// 都不是 → 非法参数
 		else {
 			// argp_error 会自动打印错误并退出程序
-			argp_error(state, "invalid mode: %s (use context|syscall|tcp_connect|msgqueue|mutexlock|preempt|schedule|fs_open|fs_read|fs_write|disk_io|block_rq|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate|tcp_retransmit)", arg);
+			argp_error(state, "invalid mode: %s (use context|syscall|tcp_connect|msgqueue|mutexlock|preempt|fs_open|fs_read|fs_write|disk_io|block_rq|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate|tcp_retransmit)", arg);
 		}
 		break;
 
@@ -123,6 +121,18 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 		opts->enable = (parsed == 1);
 		break;
 
+	// 处理 -p/--pid 选项
+	case 'p':
+		parsed = strtol(arg, &end, 10);
+		if (parsed >= 0) opts->target_pid = (int)parsed;
+		break;
+
+	// 处理 -d/--delay 选项
+	case 'd':
+		parsed = strtol(arg, &end, 10);
+		if (parsed >= 0) opts->min_delay_ns = (int)parsed;
+		break;
+
 	// 不认识的选项，返回 argp 错误码
 	default:
 		return ARGP_ERR_UNKNOWN;
@@ -157,6 +167,8 @@ int app_parse_args(int argc, char **argv, struct app_options *opts)
 	opts->mode = APP_MODE_UNSET;   // 默认模式：上下文切换监控
 	opts->poll_timeout_ms = 100;            // 默认超时：100ms
 	opts->enable = true;                    // 默认启用监控
+		opts->target_pid = 0;
+		opts->min_delay_ns = 0;
 
 	// 调用 argp 库真正开始解析命令行参数
 	// 最后一个参数 opts → 把解析结果存到这里
@@ -239,9 +251,6 @@ const char *app_mode_to_string(enum app_mode mode)
 		case APP_MODE_PREEMPT:
 			return "preempt";
 
-		// 如果是调度延迟模式 → 返回字符串 "schedule"
-		case APP_MODE_SCHEDULE:
-			return "schedule";
 		case APP_MODE_FS_OPEN:			return "fs_open";
 		case APP_MODE_FS_READ:			return "fs_read";
 		case APP_MODE_FS_WRITE:			return "fs_write";

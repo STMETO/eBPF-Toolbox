@@ -6,6 +6,7 @@
 #include "pr.h"                
 #include "pr.h"               
 #include "mem/pr/skel.h"      
+#include "common/logger.h"
 
 /**
  * @brief RingBuffer事件回调函数，内核推送页面回收事件时自动触发

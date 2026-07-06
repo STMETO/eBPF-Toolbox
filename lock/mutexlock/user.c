@@ -9,6 +9,7 @@
 #include "common/types.h"
 #include "mutexlock.h"
 #include "lock/mutexlock/skel.h"
+#include "common/logger.h"
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
@@ -60,13 +61,10 @@ int mutexlock_run(int poll_timeout_ms, bool enable)
 	err = mutexlock_bpf__attach(skel);
 	if (err) {
 		fprintf(stderr, "挂载BPF程序失败\n");
+	log_banner("互斥锁延迟监控", enable);
 		goto cleanup;
 	}
 
-	printf("=========================================\n");
-	printf("  互斥锁延迟监控已%s！\n", enable ? "启动" : "关闭");
-	printf("  按 Ctrl+C 退出\n");
-	printf("=========================================\n");
 	printf("LOCK_ADDR          | OWNER_PID PRIO NAME              | "
 	       "CONTENDER_PID PRIO NAME\n");
 	printf("-------------------------------------------------------"
