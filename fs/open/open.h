@@ -26,8 +26,18 @@ struct Open_event {
 	char comm[TASK_COMM_LEN];             // 进程名称（如 bash、cat、nginx）
 };
 
-/* 用户态入口 */
-struct Open_stats {
+
+/**
+ * @struct Open_stats
+ * 文件打开系统调用全局汇总统计结构体，存储在 stats_map 数组Map
+ * 持久累加所有符合过滤条件的 openat 调用指标，程序退出时用户态读取打印汇总报表
+ * @field count 捕获到的 openat 系统调用总次数
+ * @field total_ns 所有openat调用耗时累加总纳秒，用于计算平均打开耗时
+ * @field max_ns 单次openat系统调用最大耗时纳秒，定位文件打开卡顿
+ * @field max_pid 产生最长打开耗时的进程PID
+ * @field max_comm 最长耗时打开操作对应的进程名称
+ */
+ struct Open_stats {
 	bpf_u64_t count, total_ns, max_ns;
 	bpf_s32_t max_pid;
 	bpf_s8_t  max_comm[TASK_COMM_LEN];

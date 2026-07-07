@@ -39,12 +39,13 @@ struct {
 	__type(value, struct Open_stats);
 } stats_map SEC(".maps");
 
-/*
- * tid_map — 入口→出口临时存储
- *   key:   tid（线程ID，bpf_get_current_pid_tgid 低 32 位）
- *   value: 入口阶段捕获的半成品数据（路径 + PID）
- *   出口阶段取出后 delete，避免内存泄漏
- */
+
+/**
+* @struct entry_data
+* tid_map哈希存储的临时上下文结构体，sys_enter_openat入口保存现场
+* @field pid 发起openat调用的进程TGID
+* @field path_name_ 用户态传入的待打开文件路径字符串
+*/
 struct entry_data {
 	bpf_s32_t pid;
 	char path_name_[FS_OPEN_PATH_SIZE];
@@ -126,11 +127,11 @@ int openat_exit(struct trace_event_raw_sys_exit *ctx)
 	if (!entry)
 		return 0;  /* 没有对应入口记录（可能是开关中途开启），跳过 */
 
-		/* PID 过滤 */
-		if (ctrl->target_pid != 0 && entry->pid != ctrl->target_pid) {
-			bpf_map_delete_elem(&tid_map, &tid);
-			return 0;
-		}
+	/* PID 过滤 */
+	if (ctrl->target_pid != 0 && entry->pid != ctrl->target_pid) {
+		bpf_map_delete_elem(&tid_map, &tid);
+		return 0;
+	}
 
 
 	/* 出口返回值：openat 成功返回 fd(≥0)，失败返回 -errno */
