@@ -4,7 +4,7 @@
 #include "common/types.h"
 
 /*
- * 进程切换延迟监控 — 合并原 context_switch + schedule
+ * 进程切换延迟监控
  *
  * 探针：
  *   tp_btf/sched_switch              → 记录 prev/next 全部信息

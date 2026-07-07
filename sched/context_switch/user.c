@@ -63,12 +63,12 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 	const char *state_str;
 	switch (e->prev_state) {
-	case 0x0000: state_str = "RUNNING";  break;   /* TASK_RUNNING */
-	case 0x0001: state_str = "INTR";     break;   /* TASK_INTERRUPTIBLE */
-	case 0x0002: state_str = "UNINTR";   break;   /* TASK_UNINTERRUPTIBLE */
-	case 0x0004: state_str = "STOPPED";  break;   /* __TASK_STOPPED */
-	case 0x0008: state_str = "TRACED";   break;
-	default:     state_str = "???";
+		case 0x0000: state_str = "RUNNING";  break;   /* TASK_RUNNING */
+		case 0x0001: state_str = "INTR";     break;   /* TASK_INTERRUPTIBLE */
+		case 0x0002: state_str = "UNINTR";   break;   /* TASK_UNINTERRUPTIBLE */
+		case 0x0004: state_str = "STOPPED";  break;   /* __TASK_STOPPED */
+		case 0x0008: state_str = "TRACED";   break;
+		default:     state_str = "???";
 	}
 
 	LOG("CPU=%-2d | PREV: PID=%-6d TGID=%-6d %-16s PRIO=%-4d [%-6s] | "
@@ -133,9 +133,9 @@ int context_switch_run(int poll_timeout_ms, bool enable,
 	if (target_pid)
 		LOG("过滤 PID=%d  阈值=%" PRIu64 " ns\n", target_pid, min_delay_ns);
 	else if (min_delay_ns)
-		LOG("过滤 ALL PID  阈值=%" PRIu64 " ns\n", min_delay_ns);
+		LOG(" ALL PID  阈值=%" PRIu64 " ns\n", min_delay_ns);
 	else
-		LOG("过滤 ALL PID  阈值=无\n");
+		LOG("ALL PID  阈值=无\n");
 	LOG_HDR("%-3s  %-7s %-7s %-16s %-5s %-7s   %-7s %-7s %-16s %-5s   %-10s %s",
 		"CPU", "PREV", "TGID", "COMM", "PRIO", "STATE",
 		"NEXT", "TGID", "COMM", "PRIO", "DELAY", "TYPE");
