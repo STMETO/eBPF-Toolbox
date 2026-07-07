@@ -70,7 +70,7 @@ int BPF_PROG(sched_switch_preempt, bool preempt,
 	     struct task_struct *prev, struct task_struct *next)
 {
 	struct Preempt_ctrl *ctrl = get_ctrl();
-	if (!ctrl || !ctrl->enable || !preempt)
+	if (!ctrl || !ctrl->enable || !preempt)	// 只监控preempt = true的情况，即抢占情况
 		return 0;
 
 	int key = 0;
@@ -82,10 +82,13 @@ int BPF_PROG(sched_switch_preempt, bool preempt,
 
 	v->prev_pid    = BPF_CORE_READ(prev, pid);
 	v->next_pid    = BPF_CORE_READ(next, pid);
+
 	v->prev_tgid   = BPF_CORE_READ(prev, tgid);
 	v->next_tgid   = BPF_CORE_READ(next, tgid);
+
 	v->prev_prio   = BPF_CORE_READ(prev, prio);
 	v->next_prio   = BPF_CORE_READ(next, prio);
+	
 	v->prev_state  = BPF_CORE_READ(prev, __state);
 
 	bpf_probe_read_kernel_str(&v->prev_comm, sizeof(v->prev_comm), prev->comm);
