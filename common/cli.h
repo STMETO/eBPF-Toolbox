@@ -14,7 +14,6 @@ enum app_mode {
 	APP_MODE_TCP_MONITOR,  	// 模式3：监控 TCP 建连延迟
 	APP_MODE_MSGQUEUE,     	// 模式4：监控消息队列延迟
 	APP_MODE_MUTEXLOCK,    	// 模式5：监控互斥锁延迟
-	APP_MODE_PREEMPT,      	// 模式6：监控抢占延迟
 
 	// 文件系统监控 (5)
 	APP_MODE_FS_OPEN,          // 模式8：监控 open 系统调用
@@ -23,16 +22,11 @@ enum app_mode {
     APP_MODE_BLOCK_IO,       // 磁盘 IO 延迟监控
 
 	// 内存监控 (10)
-	APP_MODE_PAF,              // 模式13：页面分配失败分析
-	APP_MODE_PR,               // 模式14：页面回收报告
-	APP_MODE_PROC_STAT,        // 模式15：进程内存状态
-	APP_MODE_SYS_STAT,         // 模式16：系统内存状态
-	APP_MODE_MEM_LEAK,         // 模式17：内存泄漏检测
-	APP_MODE_FRAG_INFO,        // 模式18：内存碎片分析
-	APP_MODE_NUMA_FRAG_INFO,   // 模式19：NUMA 碎片信息
 	APP_MODE_DR_SNOOP,         // 模式20：直接回收追踪
+    APP_MODE_VMSTAT,          // 系统内存监控 (vmstat)
 	APP_MODE_OOM_KILLER,       // 模式21：OOM Killer 事件
 	APP_MODE_SLAB_RATE,        // 模式22：Slab 分配速率
+    APP_MODE_PROC_STAT,       // 进程内存状态
 
 	// 网络监控 (2)
     APP_MODE_UDP_MONITOR,     // UDP 发送监控

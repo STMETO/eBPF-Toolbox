@@ -11,7 +11,7 @@ static volatile sig_atomic_t g_exit_requested = 0;	// “需要退出” 的全�
 // --help / -h 命令提供帮助信息展示
 // { 长选项名, 短选项字符, 参数名, 标志位, 帮助说明 }
 static const struct argp_option g_options[] = {
-	{"mode", 'm', "context|syscall|tcp_monitor|msgqueue|mutexlock|preempt|fs_open|fs_read|fs_write|block_io|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate|udp_monitor", 0, "监控模式"},
+	{"mode", 'm', "context|syscall|tcp_monitor|msgqueue|mutexlock|preempt|fs_open|fs_read|fs_write|block_io|vmstat|dr_snoop|oom_killer|proc_stat|slab_rate|udp_monitor", 0, "监控模式"},
 	{"timeout", 't', "MILLISECONDS", 0, "ring buffer 轮询超时(毫秒)"},
 	{"enable", 'e', "0|1", 0, "是否启用监控(1=启用, 0=禁用)"},
 	{"pid",   'p', "PID",     0, "目标进程 PID 过滤，0=全部" },
@@ -61,19 +61,13 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 		}
 		// 判断参数是否是 "preempt"
 		else if (strcmp(arg, "preempt") == 0) {
-			opts->mode = APP_MODE_PREEMPT;
 		}
 			else if (strcmp(arg, "fs_open") == 0) { opts->mode = APP_MODE_FS_OPEN; }
 			else if (strcmp(arg, "fs_read") == 0) { opts->mode = APP_MODE_FS_READ; }
 			else if (strcmp(arg, "fs_write") == 0) { opts->mode = APP_MODE_FS_WRITE; }
 			else if (strcmp(arg, "block_io") == 0) { opts->mode = APP_MODE_BLOCK_IO; }
-			else if (strcmp(arg, "paf") == 0) { opts->mode = APP_MODE_PAF; }
-			else if (strcmp(arg, "pr") == 0) { opts->mode = APP_MODE_PR; }
+			else if (strcmp(arg, "vmstat") == 0) { opts->mode = APP_MODE_VMSTAT; }
 			else if (strcmp(arg, "proc_stat") == 0) { opts->mode = APP_MODE_PROC_STAT; }
-			else if (strcmp(arg, "sys_stat") == 0) { opts->mode = APP_MODE_SYS_STAT; }
-			else if (strcmp(arg, "mem_leak") == 0) { opts->mode = APP_MODE_MEM_LEAK; }
-			else if (strcmp(arg, "frag_info") == 0) { opts->mode = APP_MODE_FRAG_INFO; }
-			else if (strcmp(arg, "numa_frag") == 0) { opts->mode = APP_MODE_NUMA_FRAG_INFO; }
 			else if (strcmp(arg, "dr_snoop") == 0) { opts->mode = APP_MODE_DR_SNOOP; }
 			else if (strcmp(arg, "oom_killer") == 0) { opts->mode = APP_MODE_OOM_KILLER; }
 			else if (strcmp(arg, "slab_rate") == 0) { opts->mode = APP_MODE_SLAB_RATE; }
@@ -82,7 +76,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 		// 都不是 → 非法参数
 		else {
 			// argp_error 会自动打印错误并退出程序
-			argp_error(state, "invalid mode: %s (use context|syscall|tcp_monitor|msgqueue|mutexlock|preempt|fs_open|fs_read|fs_write|block_io|paf|pr|proc_stat|sys_stat|mem_leak|frag_info|numa_frag|dr_snoop|oom_killer|slab_rate|udp_monitor)", arg);
+			argp_error(state, "invalid mode: %s (use context|syscall|tcp_monitor|msgqueue|mutexlock|preempt|fs_open|fs_read|fs_write|block_io|vmstat|dr_snoop|oom_killer|proc_stat|slab_rate|udp_monitor)", arg);
 		}
 		break;
 
@@ -247,21 +241,14 @@ const char *app_mode_to_string(enum app_mode mode)
 			return "mutexlock";
 
 		// 如果是抢占延迟模式 → 返回字符串 "preempt"
-		case APP_MODE_PREEMPT:
 			return "preempt";
 
 		case APP_MODE_FS_OPEN:			return "fs_open";
 		case APP_MODE_FS_READ:			return "fs_read";
 		case APP_MODE_FS_WRITE:			return "fs_write";
-		case APP_MODE_PAF:			return "paf";
-		case APP_MODE_PR:			return "pr";
-		case APP_MODE_PROC_STAT:		return "proc_stat";
-		case APP_MODE_SYS_STAT:			return "sys_stat";
-		case APP_MODE_MEM_LEAK:			return "mem_leak";
-		case APP_MODE_FRAG_INFO:		return "frag_info";
-		case APP_MODE_NUMA_FRAG_INFO:		return "numa_frag";
 		case APP_MODE_DR_SNOOP:			return "dr_snoop";
 		case APP_MODE_OOM_KILLER:		return "oom_killer";
+		case APP_MODE_PROC_STAT:		return "proc_stat";
 		case APP_MODE_SLAB_RATE:		return "slab_rate";
 		case APP_MODE_UDP_MONITOR:		return "udp_monitor";
 

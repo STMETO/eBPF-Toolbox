@@ -4,16 +4,11 @@
 #include "fs/write/write.h"
 #include "fs/open/open.h"
 #include "fs/block_io/block_io.h"
-#include "mem/paf/paf.h"
-#include "mem/pr/pr.h"
-#include "mem/proc_stat/proc_stat.h"
-#include "mem/sys_stat/sys_stat.h"
 #include "mem/oom_killer/oom_killer.h"
 #include "mem/slab_rate/slab_rate.h"
-#include "mem/frag_info/frag_info.h"
-#include "mem/numa_frag/numa_frag.h"
+#include "mem/proc_stat/proc_stat.h"
+#include "mem/vmstat/vmstat.h"
 #include "mem/dr_snoop/dr_snoop.h"
-#include "mem/mem_leak/mem_leak.h"
 #include "lock/syscall/syscall.h"
 #include "lock/msgqueue/msgqueue.h"
 #include "lock/mutexlock/mutexlock.h"
@@ -45,9 +40,6 @@ int main(int argc, char **argv)
 		err = msgqueue_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
 	case APP_MODE_MUTEXLOCK:
 		err = mutexlock_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
-	case APP_MODE_PREEMPT:
-		err = preempt_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
-	case APP_MODE_FS_OPEN:
 		err = open_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
 	case APP_MODE_FS_READ:
 		err = read_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
@@ -55,21 +47,9 @@ int main(int argc, char **argv)
 		err = write_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
 		case APP_MODE_BLOCK_IO:
 			err = block_io_run(opts.poll_timeout_ms, opts.enable, opts.target_pid, opts.min_delay_ns); break;
-	case APP_MODE_PAF:
-		err = paf_run(opts.poll_timeout_ms, opts.enable); break;
-	case APP_MODE_PR:
 		err = pr_run(opts.poll_timeout_ms, opts.enable); break;
-	case APP_MODE_PROC_STAT:
-		err = proc_stat_run(opts.poll_timeout_ms, opts.enable); break;
-	case APP_MODE_SYS_STAT:
 		err = sys_stat_run(opts.poll_timeout_ms, opts.enable); break;
-	case APP_MODE_MEM_LEAK:
-		err = mem_leak_run(opts.poll_timeout_ms, opts.enable); break;
-	case APP_MODE_FRAG_INFO:
 		err = frag_info_run(opts.poll_timeout_ms, opts.enable); break;
-	case APP_MODE_NUMA_FRAG_INFO:
-		err = numa_frag_info_run(opts.poll_timeout_ms, opts.enable); break;
-	case APP_MODE_DR_SNOOP:
 		err = dr_snoop_run(opts.poll_timeout_ms, opts.enable); break;
 	case APP_MODE_OOM_KILLER:
 		err = oom_killer_run(opts.poll_timeout_ms, opts.enable); break;
