@@ -29,7 +29,7 @@ struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
 	__type(key, int);
-	__type(value, struct WWrite_stats);
+	__type(value, struct Write_stats);
 } stats_map SEC(".maps");
 
 /*

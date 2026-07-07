@@ -70,8 +70,6 @@ struct {
  */
 struct { 
 	__uint(type, BPF_MAP_TYPE_ARRAY); 
-	__uint(max_entries, 1); 
-	__type(key, int); 
 	__type(key, int); 
 	__type(value, struct BlockIo_stats); 
 } stats_map SEC(".maps");
@@ -143,7 +141,7 @@ int trace_issue(struct trace_event_raw_block_rq_completion *ctx)
 	// 计算总IO字节数（标准磁盘扇区512字节）
 	v.bytes = (u64)ctx->nr_sector * 512;
 	// 读取进程名
-	bpf_get_current_comm(&v.comm, sizeof(v->comm));
+	bpf_get_current_comm(&v.comm, sizeof(v.comm));
 
 	// 将本条IO上下文插入哈希map，等待complete追踪点读取匹配
 	bpf_map_update_elem(&io_map, &k, &v, BPF_ANY);

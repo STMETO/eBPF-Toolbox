@@ -34,7 +34,7 @@ struct Write_event {
 };
 
 /* 用户态入口 */
-struct WWrite_stats {
+struct Write_stats {
 	bpf_u64_t count, total_ns, max_ns;
 	bpf_s32_t max_pid;
 	bpf_s8_t  max_comm[TASK_COMM_LEN];
