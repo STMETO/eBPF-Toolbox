@@ -41,6 +41,19 @@ struct {
 	__type(value, struct mutex_info);
 } kmutex_map SEC(".maps");
 
+/* PERCPU 竞争等待暂存：kprobe/slowpath 写入，kretprobe 读取计算争用时延 */
+struct contention_data {
+	bpf_u64_t addr, enter_ts;
+	bpf_s32_t owner_pid, contender_pid;
+	bpf_s32_t owner_prio, contender_prio;
+	bpf_s8_t  owner_name[TASK_COMM_LEN];
+	bpf_s8_t  contender_name[TASK_COMM_LEN];
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY); __uint(max_entries, 1);
+	__type(key, int); __type(value, struct contention_data);
+} slowpath_map SEC(".maps");
+
 /*
  * ctrl_map：全局监控控制参数数组MAP
  * 全局单条配置，存储Mutexlock_ctrl开关、过滤PID、阈值（min_delay_ns预留）
@@ -183,75 +196,75 @@ int BPF_KPROBE(mutex_unlock_trace, struct mutex *lock)
 * @return 0 BPF探针固定返回值
 */
 SEC("kprobe/__mutex_lock_slowpath")
-int BPF_KPROBE(mutex_slowpath_trace, struct mutex *lock)
+int BPF_KPROBE(mutex_slowpath_entry, struct mutex *lock)
 {
 	struct Mutexlock_ctrl *c = get_ctrl();
-	if (!c || !c->enable)
-		return 0;
-
-	// 将mutex锁内核虚拟地址转为64位无符号整数，作为锁唯一标识
-	bpf_u64_t addr = (bpf_u64_t)lock;
-	// 获取当前发生阻塞等待锁的线程PID(TGID)
+	if (!c || !c->enable) return 0;
 	bpf_s32_t pid = bpf_get_current_pid_tgid();
+	if (c->target_pid != 0 && pid != c->target_pid) return 0;
 
-	// PID过滤逻辑：配置了目标监控PID，且当前阻塞线程PID不匹配，丢弃事件
-	if (c->target_pid != 0 && pid != c->target_pid)
-		return 0;
+	int key = 0;
+	struct contention_data *d = bpf_map_lookup_elem(&slowpath_map, &key);
+	if (!d) return 0;
 
-	// 从RingBuf预分配一块内存，用于存放锁竞争事件结构体 Mutexlock_event
-	struct Mutexlock_event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
+	d->enter_ts = bpf_ktime_get_ns();
+	d->addr = (bpf_u64_t)lock;
+	d->contender_pid = pid;
+	bpf_get_current_comm(&d->contender_name, sizeof(d->contender_name));
 
-	// 填充锁唯一标识内核地址
-	e->ptr = addr;
-	// 填充当前阻塞等待锁的线程PID（竞争方）
-	e->contender_pid = pid;
-	// 读取竞争线程的进程名存入事件
-	bpf_get_current_comm(&e->contender_name, sizeof(e->contender_name));
-
-	/* 读取锁持有者task_struct指针：lock->owner低1bit是内核内部标记位，需要屏蔽 */
 	long owner;
-	// CO-RE安全读取锁的owner字段（存储持有锁的task_struct指针+标记位）
 	bpf_probe_read_kernel(&owner, sizeof(owner), &lock->owner);
-	// 屏蔽最低1位标记，得到合法持有锁的task_struct结构体指针
 	struct task_struct *owner_task = (struct task_struct *)(owner & ~0x1L);
-
-	// 获取当前阻塞等待线程的task_struct，读取调度优先级
 	struct task_struct *ctask = (struct task_struct *)bpf_get_current_task();
-	bpf_probe_read_kernel(&e->contender_prio, sizeof(e->contender_prio), &ctask->prio);
+	bpf_probe_read_kernel(&d->contender_prio, sizeof(d->contender_prio), &ctask->prio);
 
-	// 判断是否存在有效锁持有者
 	if (owner_task) {
-		// 读取持有锁线程PID
-		bpf_probe_read_kernel(&e->owner_pid, sizeof(e->owner_pid), &owner_task->pid);
-		// 读取持有锁进程名称字符串
-		bpf_probe_read_kernel_str(&e->owner_name, sizeof(e->owner_name), owner_task->comm);
-		// 读取持有者调度优先级
-		bpf_probe_read_kernel(&e->owner_prio, sizeof(e->owner_prio), &owner_task->prio);
+		bpf_probe_read_kernel(&d->owner_pid, sizeof(d->owner_pid), &owner_task->pid);
+		bpf_probe_read_kernel_str(&d->owner_name, sizeof(d->owner_name), owner_task->comm);
+		bpf_probe_read_kernel(&d->owner_prio, sizeof(d->owner_prio), &owner_task->prio);
 	} else {
-		// 无持有者场景，清空持有者PID与进程名字段
-		e->owner_pid = 0;
-		__builtin_memset(e->owner_name, 0, sizeof(e->owner_name));
+		d->owner_pid = 0;
+		__builtin_memset(d->owner_name, 0, sizeof(d->owner_name));
+		d->owner_prio = 0;
 	}
-
-	// 将完整填充完毕的锁竞争事件提交到ringbuf，用户态libbpf阻塞读取并打印
-	bpf_ringbuf_submit(e, 0);
-
-	/* 更新整机全局锁竞争汇总统计指标 */
-	struct Mutexlock_stats *st = bpf_map_lookup_elem(&stats_map, &ctrl_key);
-	// 程序首次运行时stats_map无初始化数据，创建全零统计结构体写入map
-	if (!st) {
-		struct Mutexlock_stats z = {};
-		bpf_map_update_elem(&stats_map, &ctrl_key, &z, BPF_ANY);
-		// 重新查询保证指针有效，避免空指针访问
-		st = bpf_map_lookup_elem(&stats_map, &ctrl_key);
-	}
-	// 统计指针有效，全局锁竞争阻塞总次数自增1
-	if (st) {
-		st->contention_count++;
-	}
-
 	return 0;
 }
+
+/* kretprobe: 计算出竞争等待总耗时，过滤、下发事件、更新统计 */
+SEC("kretprobe/__mutex_lock_slowpath")
+int BPF_KRETPROBE(mutex_slowpath_exit, int ret)
+{
+	struct Mutexlock_ctrl *c = get_ctrl();
+	if (!c || !c->enable) return 0;
+
+	int key = 0;
+	struct contention_data *d = bpf_map_lookup_elem(&slowpath_map, &key);
+	if (!d || d->enter_ts == 0) return 0;
+
+	bpf_u64_t now = bpf_ktime_get_ns();
+	bpf_u64_t contention_ns = now - d->enter_ts;
+	d->enter_ts = 0;
+
+	if (c->min_delay_ns && contention_ns < c->min_delay_ns) return 0;
+
+	struct Mutexlock_event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+	if (!e) return 0;
+
+	e->ptr = d->addr;
+	e->owner_pid = d->owner_pid;
+	e->contender_pid = d->contender_pid;
+	e->owner_prio = d->owner_prio;
+	e->contender_prio = d->contender_prio;
+	e->contention_ns = contention_ns;
+	__builtin_memcpy(e->owner_name, d->owner_name, TASK_COMM_LEN);
+	__builtin_memcpy(e->contender_name, d->contender_name, TASK_COMM_LEN);
+
+	bpf_ringbuf_submit(e, 0);
+
+	struct Mutexlock_stats *st = bpf_map_lookup_elem(&stats_map, &ctrl_key);
+	if (!st) { struct Mutexlock_stats z = {}; bpf_map_update_elem(&stats_map, &ctrl_key, &z, BPF_ANY); st = bpf_map_lookup_elem(&stats_map, &ctrl_key); }
+	if (st) st->contention_count++;
+	return 0;
+}
+
  

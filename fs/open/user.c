@@ -71,8 +71,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	(void)data_sz;
 
 	// 实时打印单条open系统调用事件
-	LOG("PID=%-6d FD=%-4d %-16s %s\n",
-	    e->pid, e->fd, e->comm, e->path_name_);
+	LOG("PID=%-6d FD=%-4d %-16s %s | ", e->pid, e->fd, e->comm, e->path_name_); log_col_ns(e->latency_ns, 10000, 100000); printf("\n");
 	return 0;
 }
 

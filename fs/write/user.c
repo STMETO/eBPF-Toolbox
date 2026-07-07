@@ -67,10 +67,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	(void)data_sz;
 
 	// 实时打印单条write系统调用IO事件
-	LOG("PID=%-6d FD=%-4d REQ=%-8lld ACTUAL=%-8lld %-16s %s\n",
-	    e->pid, e->fd, (long long)e->count, (long long)e->real_count,
-	    e->comm, e->path_name_[0] ? e->path_name_ : "(unknown)");
-	return 0;
+	LOG("PID=%-6d FD=%-4d REQ=%-8lld ACTUAL=%-8lld %-16s %s | ", e->pid, e->fd, (long long)e->count, (long long)e->real_count, e->comm, e->path_name_[0] ? e->path_name_ : "(unknown)"); log_col_ns(e->latency_ns, 10000, 100000); printf("\n");
 }
 
 /**

@@ -66,9 +66,10 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 	// 打印锁内核地址、持有锁进程信息、红色标记阻塞竞争进程
 	LOG("LOCK=0x%-16" PRIx64 " | OWNER: PID=%-6d %-16s PRIO=%-4d | "
-	    C_RED "CONTENDER" C_RESET ": PID=%-6d %-16s PRIO=%-4d\n",
+	    C_RED "CONTENDER" C_RESET ": PID=%-6d %-16s PRIO=%-4d | WAIT: ",
 	    e->ptr, e->owner_pid, e->owner_name, e->owner_prio,
 	    e->contender_pid, e->contender_name, e->contender_prio);
+	log_col_ns(e->contention_ns, 100000, 1000000); printf("\n");
 	return 0;
 }
 

@@ -23,6 +23,7 @@ struct Read_event {
 	bpf_s32_t fd;                         // read 操作的文件描述符
 	bpf_s64_t bytes_read;                 // 实际读取字节数（返回 -1 表示读失败）
 	bpf_u64_t timestamp_ns;               // 事件时间戳（纳秒）
+	bpf_u64_t latency_ns;       // read 系统调用耗时（纳秒）
 	char path_name_[FS_READ_PATH_SIZE];   // 文件路径（从内核 fd 表反查，可能为空）
 	char comm[TASK_COMM_LEN];             // 进程名称
 };

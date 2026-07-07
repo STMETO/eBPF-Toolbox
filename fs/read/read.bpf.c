@@ -53,6 +53,7 @@ struct {
   * 流程：sys_enter写入现场 → sys_exit读取处理后delete释放条目，防止哈希溢出
   */
 struct entry_data {
+	bpf_u64_t enter_ts;
 	bpf_s32_t pid;
 	bpf_s32_t fd;
 	bpf_s8_t  comm[TASK_COMM_LEN];
@@ -161,6 +162,7 @@ int read_entry(struct trace_event_raw_sys_enter *ctx)
 	entry.pid = pid;
 	// read第一个系统调用参数为文件fd
 	entry.fd  = (bpf_s32_t)ctx->args[0];
+	entry.enter_ts = bpf_ktime_get_ns();
 	// 读取当前进程名称
 	bpf_get_current_comm(entry.comm, sizeof(entry.comm));
 	// 调用工具函数，通过fd反向解析文件路径
@@ -217,6 +219,7 @@ int read_exit(struct trace_event_raw_sys_exit *ctx)
 	}
 
 	// 填充read事件所有字段
+	e->latency_ns = bpf_ktime_get_ns() - entry->enter_ts;
 	e->pid         = entry->pid;
 	e->fd          = entry->fd;
 	e->timestamp_ns = bpf_ktime_get_ns();

@@ -24,6 +24,7 @@ struct Mutexlock_event {
 	bpf_u64_t ptr;
 	bpf_s32_t owner_pid, contender_pid;
 	bpf_s32_t owner_prio, contender_prio;
+	bpf_u64_t contention_ns;    // 竞争等待耗时（纳秒）
 	bpf_s8_t  contender_name[TASK_COMM_LEN];
 	bpf_s8_t  owner_name[TASK_COMM_LEN];
 };

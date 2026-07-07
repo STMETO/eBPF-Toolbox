@@ -67,10 +67,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	(void)data_sz;
 
 	// 打印单条read IO事件，路径为空时显示unknown
-	LOG("PID=%-6d FD=%-4d BYTES=%-8lld %-16s %s\n",
-	    e->pid, e->fd, (long long)e->bytes_read, e->comm,
-	    e->path_name_[0] ? e->path_name_ : "(unknown)");
 	return 0;
+	LOG("PID=%-6d FD=%-4d BYTES=%-8lld %-16s %s | ", e->pid, e->fd, (long long)e->bytes_read, e->comm, e->path_name_[0] ? e->path_name_ : "(unknown)"); log_col_ns(e->latency_ns, 10000, 100000); printf("\n");
 }
 
 /**

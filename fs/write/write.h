@@ -29,6 +29,7 @@ struct Write_event {
 	bpf_s64_t count;                      // 用户请求写入的字节数（write 第三个参数）
 	bpf_s64_t real_count;                 // 实际写入字节数（write 返回值，-1 表示失败）
 	bpf_u64_t timestamp_ns;               // 事件时间戳（纳秒）
+	bpf_u64_t latency_ns;       // write 系统调用耗时（纳秒）
 	char path_name_[FS_WRITE_PATH_SIZE];  // 文件路径（内核 fd 表反查，可能为空）
 	char comm[TASK_COMM_LEN];             // 进程名称
 };

@@ -36,6 +36,7 @@ struct {
  * tid_map — 入口→出口临时存储（key=tid，出口即删）
  */
 struct entry_data {
+	bpf_u64_t enter_ts;
 	bpf_s32_t pid;
 	bpf_s32_t fd;
 	bpf_s64_t count;
@@ -120,6 +121,7 @@ int write_entry(struct trace_event_raw_sys_enter *ctx)
 	 */
 	entry.pid   = (bpf_s32_t)(pid_tgid >> 32);
 	entry.fd    = (bpf_s32_t)ctx->args[0];     
+	entry.enter_ts = bpf_ktime_get_ns();
 	entry.count = (bpf_s64_t)ctx->args[2];     
 	bpf_get_current_comm(entry.comm, sizeof(entry.comm));
 	fill_path_from_fd(entry.fd, entry.path_name_, FS_WRITE_PATH_SIZE);
@@ -158,6 +160,7 @@ int write_exit(struct trace_event_raw_sys_exit *ctx)
 	}
 
 	/* ---- 组装完整事件 ---- */
+	e->latency_ns = bpf_ktime_get_ns() - entry->enter_ts;
 	e->pid          = entry->pid;
 	e->fd           = entry->fd;
 	e->count        = entry->count;              /* 请求写入字节数 */

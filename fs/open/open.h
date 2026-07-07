@@ -22,6 +22,7 @@ struct Open_event {
 	bpf_s32_t pid;                        // 进程 PID（内核态 bpf_get_current_pid_tgid 高 32 位）
 	bpf_s32_t fd;                         // openat 返回的文件描述符（0=stdin,1=stdout,2=stderr…）
 	bpf_u64_t timestamp_ns;               // 事件时间戳（纳秒，bpf_ktime_get_ns）
+	bpf_u64_t latency_ns;       // openat 系统调用耗时（纳秒）
 	char path_name_[FS_OPEN_PATH_SIZE];   // 打开的文件绝对路径（如 /etc/passwd）
 	char comm[TASK_COMM_LEN];             // 进程名称（如 bash、cat、nginx）
 };

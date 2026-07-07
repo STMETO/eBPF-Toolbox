@@ -47,6 +47,7 @@ struct {
 * @field path_name_ 用户态传入的待打开文件路径字符串
 */
 struct entry_data {
+	bpf_u64_t enter_ts;
 	bpf_s32_t pid;
 	char path_name_[FS_OPEN_PATH_SIZE];
 };
