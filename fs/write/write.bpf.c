@@ -143,14 +143,14 @@ int write_exit(struct trace_event_raw_sys_exit *ctx)
 	u32 tid = (u32)pid_tgid;
 
 	struct entry_data *entry = bpf_map_lookup_elem(&tid_map, &tid);
-	if (!entry)
+		if (!entry)
+			return 0;
 
 		/* PID 过滤 */
 		if (ctrl->target_pid != 0 && entry->pid != ctrl->target_pid) {
 			bpf_map_delete_elem(&tid_map, &tid);
 			return 0;
 		}
-		return 0;
 
 
 	struct Write_event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
