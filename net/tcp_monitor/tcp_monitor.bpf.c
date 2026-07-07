@@ -295,6 +295,8 @@ int BPF_PROG(fentry_tcp_rcv_state_process, struct sock *sk)
 
 	// 从当前sk读取完整IP+端口四元组（此时源端口已分配，connect阶段port为0无法读取）
 	fill_sock(e, sk);
+	// 跳过 tcp_close 时 sk 已部分销毁的情况 (源端口为0)
+	if (e->sport == 0) { bpf_ringbuf_discard(e, 0); return 0; }
 
 	// 更新全局握手统计：计数、总延迟、最大延迟记录
 	update_stats(e);
@@ -359,6 +361,8 @@ int BPF_KPROBE(trace_tcp_retransmit, struct sock *sk)
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 	// 从sock读取完整IPv4/IPv6四元组填充事件
 	fill_sock(e, sk);
+	// 跳过 tcp_close 时 sk 已部分销毁的情况 (源端口为0)
+	if (e->sport == 0) { bpf_ringbuf_discard(e, 0); return 0; }
 	// 更新全局统计：全局重传总计数+1
 	update_stats(e);
 
@@ -428,6 +432,8 @@ int BPF_KPROBE(trace_tcp_close, struct sock *sk)
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 	// 从sock读取IPv4/IPv6完整四元组填充事件
 	fill_sock(e, sk);
+	// 跳过 tcp_close 时 sk 已部分销毁的情况 (源端口为0)
+	if (e->sport == 0) { bpf_ringbuf_discard(e, 0); return 0; }
 	// 更新全局统计：关闭连接计数+1，累加连接存活时长、更新最长连接记录
 	update_stats(e);
 	
