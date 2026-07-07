@@ -79,9 +79,19 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 	return 0;
 }
 
+static const char g_doc[] =
+	"eBPF 性能监控工具集\n\n"
+	"监控模式 (-m):\n"
+	"  调度:    context, preempt\n"
+	"  同步:    syscall, msgqueue, mutexlock\n"
+	"  文件:    fs_open, fs_read, fs_write, block_io\n"
+	"  内存:    dr_snoop, oom_killer, proc_stat, slab_rate\n"
+	"  网络:    tcp_monitor, udp_monitor\n\n"
+	"示例: sudo ./test -m block_io -p 1234 -d 100000 -t 100";
+
 static const struct argp g_argp = {
 	.options = g_options, .parser = parse_opt,
-	.args_doc = "", .doc = "eBPF 性能监控工具集",
+	.args_doc = "", .doc = g_doc,
 };
 
 int app_parse_args(int argc, char **argv, struct app_options *opts)
