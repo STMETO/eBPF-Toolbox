@@ -126,34 +126,24 @@ int BPF_KPROBE(trace_udp_sendmsg, struct sock *sk, struct msghdr *msg, size_t le
         BPF_CORE_READ_INTO(&v->saddr_v6, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr32);
     }
 
-    // 读取目的五元组：优先读取sendto传入的msg_name用户层地址；无则读取套接字默认对端
+    // 目的地址：一次性读完整 sockaddr_in，回退到 sk
     struct sockaddr *dst = BPF_CORE_READ(msg, msg_name);
+    int got_dst = 0;
     if (dst) {
-        // 从用户空间读取sockaddr地址族
-        unsigned short family;
-        bpf_probe_read_user(&family, sizeof(family), &dst->sa_family);
-
-        if (family == AF_INET) {
-            // IPv4目的地址解析
-            struct sockaddr_in sin;
-            bpf_probe_read_user(&sin, sizeof(sin), dst);
+        struct sockaddr_in sin;
+        if (bpf_probe_read_user(&sin, sizeof(sin), dst) == 0 &&
+            sin.sin_family == AF_INET) {
             v->dport    = sin.sin_port;
             v->daddr_v4 = sin.sin_addr.s_addr;
-        } else if (family == AF_INET6) {
-            // IPv6目的地址解析
-            struct sockaddr_in6 sin6;
-            bpf_probe_read_user(&sin6, sizeof(sin6), dst);
-            v->dport = sin6.sin6_port;
-            __builtin_memcpy(v->daddr_v6, &sin6.sin6_addr, 16);
+            got_dst = 1;
         }
-    } else {
-        // 用户未传入目的地址，读取套接字已连接的对端信息
+    }
+    if (!got_dst) {
         v->dport = BPF_CORE_READ(sk, __sk_common.skc_dport);
-        if (v->af == AF_INET) {
+        if (v->af == AF_INET)
             v->daddr_v4 = BPF_CORE_READ(sk, __sk_common.skc_daddr);
-        } else {
+        else
             BPF_CORE_READ_INTO(&v->daddr_v6, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr32);
-        }
     }
 
     return 0;
@@ -165,7 +155,7 @@ int BPF_KPROBE(trace_udp_sendmsg, struct sock *sk, struct msghdr *msg, size_t le
  * 封装事件推入ringbuf给用户态，同时更新全局统计指标
  * 参数：retval udp_sendmsg系统调用返回值（发送成功字节/错误码，本代码未使用）
  */
-SEC("kretprobe/ret_udp_sendmsg")
+SEC("kretprobe/udp_sendmsg")
 int BPF_KRETPROBE(ret_udp_sendmsg, int retval)
 {
     // 读取全局控制配置
