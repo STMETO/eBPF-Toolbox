@@ -76,7 +76,7 @@ static int print_stat(struct slab_rate_bpf *skel)
 	int show = rows < OUTPUT_ROWS ? rows : OUTPUT_ROWS;
 	// 循环打印TOP N slab缓存统计
 	for (int i = 0; i < show; i++)
-		printf("%-32s %8llu %12llu\n", values[i].name, values[i].count, values[i].size);
+		printf("%-32s %8" PRIu64 " %12" PRIu64 "\n", values[i].name, values[i].count, values[i].size);
 	printf("\n");
 
 	// --------------------------

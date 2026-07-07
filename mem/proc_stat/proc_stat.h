@@ -46,7 +46,7 @@ struct ProcStat_event {
  * @param enable true启动采集，false停止采集
  * @return 0成功，负数错误码
  */
-int proc_stat_run(int poll_timeout_ms, bool enable);
+int proc_stat_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t min_delay_ns);
 #endif
 
 #endif

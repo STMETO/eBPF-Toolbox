@@ -10,6 +10,7 @@
 enum app_mode {
 	APP_MODE_UNSET = 0,    	// 初始状态：未选择任何模式（必须用户指定）
 	APP_MODE_CONTEXT_SWITCH, // 模式1：监控进程上下文切换
+    APP_MODE_PREEMPT,         // 抢占延迟
 	APP_MODE_SYSCALL,      	// 模式2：监控系统调用
 	APP_MODE_TCP_MONITOR,  	// 模式3：监控 TCP 建连延迟
 	APP_MODE_MSGQUEUE,     	// 模式4：监控消息队列延迟
@@ -23,7 +24,6 @@ enum app_mode {
 
 	// 内存监控 (10)
 	APP_MODE_DR_SNOOP,         // 模式20：直接回收追踪
-    APP_MODE_VMSTAT,          // 系统内存监控 (vmstat)
 	APP_MODE_OOM_KILLER,       // 模式21：OOM Killer 事件
 	APP_MODE_SLAB_RATE,        // 模式22：Slab 分配速率
     APP_MODE_PROC_STAT,       // 进程内存状态

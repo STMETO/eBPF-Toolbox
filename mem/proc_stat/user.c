@@ -49,7 +49,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
  * @param enable true=开启内核采集；false=关闭内核采集
  * @return 0正常退出；正数/负数代表错误码
  */
-int proc_stat_run(int poll_timeout_ms, bool enable)
+int proc_stat_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t min_delay_ns)
 {
 	// BPF骨架对象，管理整个BPF程序、maps、挂载点生命周期
 	struct proc_stat_bpf *skel = NULL;

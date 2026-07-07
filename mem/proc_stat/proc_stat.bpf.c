@@ -60,6 +60,12 @@ int BPF_KPROBE(finish_task_switch, struct task_struct *prev)
 	pid_t p_pid = BPF_CORE_READ(prev, pid);
 
 	// 从ringbuf预留一块内存存放事件，大小为事件结构体
+		/* kernel threads have mm == NULL, skip */
+		if (!BPF_CORE_READ(prev, mm)) return 0;
+		/* skip kernel threads (mm == NULL) */
+		if (!BPF_CORE_READ(prev, mm))
+			return 0;
+
 	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
 	if (!e) // 环形缓冲区满/分配失败，丢弃本次事件
 		return 0;
