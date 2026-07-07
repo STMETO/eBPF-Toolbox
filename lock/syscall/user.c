@@ -67,8 +67,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	(void)data_sz;
 
 	// 打印PID、线程ID、进程名、系统调用号
-	LOG("%-5d %-5d %-16s %-4d | ",
-	    e->pid, e->comm, e->tid, e->syscall_id);
+	LOG("%-5d %-5d %-16s %-4d | ", e->pid, e->tid, e->comm, e->syscall_id);
+	    
 	// 彩色打印系统调用耗时，区分低延迟/高延迟高亮
 	log_col_us(e->delay_ns, 100, 1000);
 	printf("\n");
