@@ -60,7 +60,7 @@ struct data_t {
  * @param enable 全局监控总开关，true启动采集，false仅加载不采集
  * @return int 执行状态码，0正常退出，负数为异常错误码
  */
-int dr_snoop_run(int poll_timeout_ms, bool enable);
+int dr_snoop_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t min_delay_ns);
 #endif
 
 #endif

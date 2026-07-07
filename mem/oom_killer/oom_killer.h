@@ -36,7 +36,7 @@ struct OomKiller_event {
  * @param enable 采集总开关，true加载BPF探针，false停止监控
  * @return int 0正常退出，负数代表加载/挂载/读取失败
  */
-int oom_killer_run(int poll_timeout_ms, bool enable);
+int oom_killer_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t min_delay_ns);
 #endif
 
 #endif

@@ -104,7 +104,7 @@ static int print_stat(struct slab_rate_bpf *skel)
  * @param enable true开启内核slab采集，false关闭
  * @return 0正常退出，正数/负数代表错误
  */
-int slab_rate_run(int poll_timeout_ms, bool enable)
+int slab_rate_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t min_delay_ns)
 {
 	struct slab_rate_bpf *skel = NULL;
 	// 下发到ctrl_map的采集开关配置

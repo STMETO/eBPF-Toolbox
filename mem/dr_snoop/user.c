@@ -99,7 +99,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
  * @param enable 全局监控开关（当前骨架暂未使用ctrl结构体）
  * @return 0正常退出，非0异常错误码
  */
-int dr_snoop_run(int poll_timeout_ms, bool enable)
+int dr_snoop_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t min_delay_ns)
 {
     // BPF骨架对象，自动生成的dr_snoop_bpf结构体，管理maps、progs、挂载点
 	struct dr_snoop_bpf *skel = NULL;

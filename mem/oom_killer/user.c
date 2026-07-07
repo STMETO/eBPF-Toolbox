@@ -43,7 +43,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
  * @param enable 采集总开关，true开启OOM监控，false关闭探针采集
  * @return int 0正常退出，正数为错误码
  */
-int oom_killer_run(int poll_timeout_ms, bool enable)
+int oom_killer_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t min_delay_ns)
 {
 	struct oom_killer_bpf *skel = NULL;   // BPF骨架句柄，管理所有BPF程序与Map
 	struct ring_buffer *rb = NULL;        // libbpf环形缓冲区管理句柄
