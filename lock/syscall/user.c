@@ -46,12 +46,6 @@ static void print_stats(void)
  * 捕获中断信号，先打印全局系统调用统计再安全退出，避免丢失汇总数据
  * @param sig 触发的信号值，函数内未使用
  */
-static void sig_handler(int sig) {
-	(void)sig;
-	print_stats();
-	_exit(0);
-}
-
 /**
  * @brief RingBuffer事件回调函数，内核过滤出系统调用事件后libbpf自动调用
  * 格式化实时打印进程PID、线程TID、进程名、系统调用号、调用耗时
@@ -112,9 +106,6 @@ int syscall_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_
 	}
 
 	// 注册中断信号，实现Ctrl+C优雅退出并打印统计
-	signal(SIGINT, sig_handler);
-	signal(SIGTERM, sig_handler);
-
 	// 2. 创建RingBuffer，绑定内核rb环形缓冲区与事件回调handle_event
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
 	if (!rb) {

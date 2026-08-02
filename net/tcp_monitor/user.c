@@ -3,8 +3,10 @@
 #include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include "common/cli.h"
 #include "common/types.h"
@@ -21,7 +23,7 @@ static struct tcp_monitor_bpf *g_skel = NULL;
  * @param af 地址族 AF_INET / AF_INET6
  * @param v4 IPv4 网络序32位地址
  * @param v6 IPv6 16字节地址数组
- * @param port 网络序端口号
+ * @param port 主机字节序端口号
  * @note IPv6映射IPv4地址(::ffff:a.b.c.d)简化输出为a.b.c.d，纯IPv6用[]包裹区分端口
  */
 static void fmt_addr(char *buf, size_t len, int af, uint32_t v4, uint8_t *v6, uint16_t port)
@@ -34,19 +36,19 @@ static void fmt_addr(char *buf, size_t len, int af, uint32_t v4, uint8_t *v6, ui
 		inet_ntop(AF_INET6, v6, ip, sizeof(ip));
 		// 处理IPv4映射IPv6地址，精简显示
 		if (strncmp(ip, "::ffff:", 7) == 0) {
-			snprintf(buf, len, "%s:%-5d", ip + 7, ntohs(port));
+			snprintf(buf, len, "%s:%-5u", ip + 7, port);
 		} else {
 			// 标准IPv6加方括号区分端口
-			snprintf(buf, len, "[%s]:%-5d", ip, ntohs(port));
+			snprintf(buf, len, "[%s]:%-5u", ip, port);
 		}
 		return;
 	} else {
 		// 未知地址族占位输出
-		snprintf(buf, len, "?:%-5d", ntohs(port));
+		snprintf(buf, len, "?:%-5u", port);
 		return;
 	}
 	// IPv4 格式化输出 IP:端口
-	snprintf(buf, len, "%s:%-5d", ip, ntohs(port));
+	snprintf(buf, len, "%s:%-5u", ip, port);
 }
 
 /**
@@ -61,19 +63,64 @@ static void print_stats(void)
 
 	struct TcpMonitor_stats s = {};
 	int key = 0;
-	// 读取数组map唯一条目key=0；读取失败或无任何事件直接不打印
-	if (bpf_map__lookup_elem(g_skel->maps.stats_map, &key, sizeof(key),
-			&s, sizeof(s), 0) || s.hs_count + s.rt_count + s.cl_count == 0)
+	int ncpus = libbpf_num_possible_cpus();
+	size_t stride = (sizeof(struct TcpMonitor_stats) + 7) & ~((size_t)7);
+	void *values;
+
+	if (ncpus <= 0)
+		return;
+	values = calloc((size_t)ncpus, stride);
+	if (!values)
+		return;
+	if (bpf_map_lookup_elem(bpf_map__fd(g_skel->maps.stats_map), &key, values)) {
+		free(values);
+		return;
+	}
+	for (int cpu = 0; cpu < ncpus; cpu++) {
+		const struct TcpMonitor_stats *v =
+			(const struct TcpMonitor_stats *)((char *)values + (size_t)cpu * stride);
+		s.connect_attempted += v->connect_attempted;
+		s.hs_count += v->hs_count;
+		s.hs_total_ns += v->hs_total_ns;
+		s.rt_count += v->rt_count;
+		s.cl_count += v->cl_count;
+		s.cl_total_ns += v->cl_total_ns;
+		if (v->cl_max_ns > s.cl_max_ns)
+			s.cl_max_ns = v->cl_max_ns;
+		s.filtered_latency += v->filtered_latency;
+		s.ringbuf_dropped += v->ringbuf_dropped;
+		s.map_update_failed += v->map_update_failed;
+		s.untracked_events += v->untracked_events;
+		if (v->hs_max_ns > s.hs_max_ns) {
+			s.hs_max_ns = v->hs_max_ns;
+			s.hs_max_sport = v->hs_max_sport;
+			s.hs_max_dport = v->hs_max_dport;
+			s.hs_max_af = v->hs_max_af;
+			s.hs_max_saddr = v->hs_max_saddr;
+			s.hs_max_daddr = v->hs_max_daddr;
+			memcpy(s.hs_max_saddr_v6, v->hs_max_saddr_v6,
+			       sizeof(s.hs_max_saddr_v6));
+			memcpy(s.hs_max_daddr_v6, v->hs_max_daddr_v6,
+			       sizeof(s.hs_max_daddr_v6));
+			memcpy(s.hs_max_comm, v->hs_max_comm, sizeof(s.hs_max_comm));
+		}
+	}
+	free(values);
+	if (!s.connect_attempted && !s.hs_count && !s.rt_count && !s.cl_count)
 		return;
 
 	char src[64], dst[64];
-	fprintf(stderr, "\n");
+	log_output_lock();
+	printf("\n");
 	// 彩色表头打印
 	printf(C_CYAN C_BOLD "══════ TCP 监控统计 ══════\n" C_RESET);
+	printf("  connect: %" PRIu64 " 次\n", s.connect_attempted);
 	// 打印握手汇总：总次数、平均延迟、最大延迟及对应连接四元组
 	if (s.hs_count) {
-		fmt_addr(src, sizeof(src), AF_INET, s.hs_max_saddr, NULL, s.hs_max_sport);
-		fmt_addr(dst, sizeof(dst), AF_INET, s.hs_max_daddr, NULL, s.hs_max_dport);
+		fmt_addr(src, sizeof(src), s.hs_max_af, s.hs_max_saddr,
+			 s.hs_max_saddr_v6, s.hs_max_sport);
+		fmt_addr(dst, sizeof(dst), s.hs_max_af, s.hs_max_daddr,
+			 s.hs_max_daddr_v6, s.hs_max_dport);
 		printf("  握手: %" PRIu64 " 次  avg=%" PRIu64 " us  max=%" PRIu64 " us"
 		       "  (%s → %s)\n",
 		       s.hs_count, s.hs_total_ns / (s.hs_count * 1000),
@@ -84,20 +131,20 @@ static void print_stats(void)
 		printf("  重传: %" PRIu64 " 次\n", s.rt_count);
 	// 总关闭连接次数
 	if (s.cl_count)
-		printf("  关闭: %" PRIu64 " 次\n", s.cl_count);
+		printf("  关闭: %" PRIu64 " 次  avg_life=%" PRIu64 " ms  max_life=%" PRIu64 " ms\n",
+		       s.cl_count, s.cl_total_ns / s.cl_count / 1000000,
+		       s.cl_max_ns / 1000000);
+	printf("  健康: latency_filtered=%" PRIu64 " ringbuf_drop=%" PRIu64
+	       " map_fail=%" PRIu64 " untracked=%" PRIu64 "\n",
+	       s.filtered_latency, s.ringbuf_dropped,
+	       s.map_update_failed, s.untracked_events);
 	printf(C_CYAN C_BOLD "════════════════════════════\n" C_RESET);
+	log_output_unlock();
 }
 
 /**
  * @brief SIGINT/SIGTERM信号回调：捕获Ctrl+C，打印统计并退出
  */
-static void sig_handler(int sig)
-{
-	(void)sig;
-	print_stats();
-	_exit(0);
-}
-
 /**
  * @brief TCP内核状态数字转可读字符串
  * @param state sk->__sk_common.skc_state 数值
@@ -110,10 +157,14 @@ static const char *tcp_state_str(uint32_t state)
 	case 2: return "SYN_SENT"; // 客户端发SYN等待应答
 	case 3: return "SYN_RECV"; // 服务端收到SYN
 	case 4: return "FIN_W1";   // FIN_WAIT_1
-	case 5: return "CLOSE_W";  // CLOSE_WAIT
-	case 6: return "LAST_ACK";
-	case 7: return "TIME_W";  // TIME_WAIT
-	case 8: return "CLOSED";
+	case 5: return "FIN_W2";
+	case 6: return "TIME_W";
+	case 7: return "CLOSED";
+	case 8: return "CLOSE_W";
+	case 9: return "LAST_ACK";
+	case 10: return "LISTEN";
+	case 11: return "CLOSING";
+	case 12: return "NEW_SYN_RECV";
 	default: return "???";
 	}
 }
@@ -135,29 +186,31 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	// 格式化源、目的IP端口字符串
 	fmt_addr(src, sizeof(src), e->af, e->saddr_v4, (uint8_t*)e->saddr_v6, e->sport);
 	fmt_addr(dst, sizeof(dst), e->af, e->daddr_v4, (uint8_t*)e->daddr_v6, e->dport);
+	log_output_lock();
 
 	// 按事件类型区分打印格式
 	switch (e->type) {
 		case TCP_EV_HANDSHAKE:
 			// 绿色握手事件，打印建连耗时(微秒)
-			LOG("%-10s | PID=%-6d %-16s %-25s → %-25s | ",
-				C_GREEN "HANDSHAKE" C_RESET, e->pid, e->comm, src, dst);
+			LOG("%-10s | TGID=%-6u TID=%-6u %-16s %-25s → %-25s | ",
+				C_GREEN "HANDSHAKE" C_RESET, e->tgid, e->tid, e->comm, src, dst);
 			log_col_us(e->latency_ns / 1000, 1000, 10000);
 			printf("\n");
 			break;
 		case TCP_EV_RETRANSMIT:
 			// 黄色重传事件，打印当前累计重传数、TCP状态
-			LOG("%-10s | PID=%-6d %-16s %-25s ← %-25s | R#%-3u %s\n",
-				C_YELLOW "RETRANSMIT" C_RESET, e->pid, e->comm, src, dst,
+			LOG("%-10s | TGID=%-6u TID=%-6u %-16s %-25s → %-25s | R#%-3u %s\n",
+				C_YELLOW "RETRANSMIT" C_RESET, e->tgid, e->tid, e->comm, src, dst,
 				e->retrans_cnt, tcp_state_str(e->state));
 			break;
 		case TCP_EV_CLOSE:
 			// 青色关闭事件，打印整条连接总重传数、关闭时TCP状态
-			LOG("%-10s | PID=%-6d %-16s %-25s → %-25s | R#%-3u %s\n",
-				C_CYAN "CLOSE" C_RESET, e->pid, e->comm, src, dst,
-				e->retrans_cnt, tcp_state_str(e->state));
+			LOG("%-10s | TGID=%-6u TID=%-6u %-16s %-25s → %-25s | R#%-3u %s LIFE=%" PRIu64 "ms\n",
+				C_CYAN "CLOSE" C_RESET, e->tgid, e->tid, e->comm, src, dst,
+				e->retrans_cnt, tcp_state_str(e->state), e->latency_ns / 1000000);
 			break;
 	}
+	log_output_unlock();
 	return 0;
 }
 
@@ -166,7 +219,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
  * @param poll_timeout_ms ringbuf阻塞读取超时时间(ms)
  * @param enable 下发给内核的总开关
  * @param target_pid 过滤指定进程TGID，0=全量采集
- * @param min_latency_ns 握手延迟过滤阈值(当前内核未使用预留)
+ * @param min_latency_ns 握手延迟过滤阈值
  * @return 0正常退出，非0异常错误码
  */
 int tcp_monitor_run(int poll_timeout_ms, bool enable,
@@ -176,6 +229,13 @@ int tcp_monitor_run(int poll_timeout_ms, bool enable,
 	struct ring_buffer *rb = NULL;
 	const int key = 0;
 	int err = 0;
+	bpf_u64_t pid_ns_dev, pid_ns_ino;
+
+	err = app_get_pid_namespace(&pid_ns_dev, &pid_ns_ino);
+	if (err) {
+		fprintf(stderr, "读取 PID namespace 失败: %s\n", strerror(-err));
+		return 1;
+	}
 
 	// 1. 打开并加载BPF骨架（ELF加载、map创建、校验verifier）
 	skel = tcp_monitor_bpf__open_and_load();
@@ -189,7 +249,9 @@ int tcp_monitor_run(int poll_timeout_ms, bool enable,
 	struct TcpMonitor_ctrl ctrl = {
 		.enable = enable,
 		.min_latency_ns = min_latency_ns,
-		.target_pid = target_pid
+		.target_pid = target_pid,
+		.pid_ns_dev = pid_ns_dev,
+		.pid_ns_ino = pid_ns_ino,
 	};
 	err = bpf_map__update_elem(skel->maps.ctrl_map, &key, sizeof(key),
 				   &ctrl, sizeof(ctrl), BPF_ANY);
@@ -199,9 +261,6 @@ int tcp_monitor_run(int poll_timeout_ms, bool enable,
 	}
 
 	// 3. 注册信号捕获，Ctrl+C/程序终止触发统计打印
-	signal(SIGINT, sig_handler);
-	signal(SIGTERM, sig_handler);
-
 	// 4. 创建RingBuffer，绑定内核rb map与事件回调handle_event
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
 	if (!rb) {
@@ -218,12 +277,14 @@ int tcp_monitor_run(int poll_timeout_ms, bool enable,
 	}
 
 	// 打印启动横幅、过滤提示、表头分隔线
+	log_output_lock();
 	log_banner("TCP 网络监控", enable);
 	if (target_pid)
 		LOG("过滤 PID=%d\n", target_pid);
-	LOG_HDR("%-12s %-7s %-16s %-26s %-26s %s",
-		"EVENT", "PID", "COMM", "SRC:PORT", "DST:PORT", "DETAIL");
+	LOG_HDR("%-12s %-7s %-7s %-16s %-26s %-26s %s",
+		"EVENT", "TGID", "TID", "COMM", "SRC:PORT", "DST:PORT", "DETAIL");
 	LOG_SEP();
+	log_output_unlock();
 
 	// 6. 主循环：阻塞轮询ringbuf等待内核事件
 	while (!app_should_exit()) {

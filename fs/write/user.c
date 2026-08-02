@@ -45,12 +45,6 @@ static void print_stats(void)
  * 捕获退出信号后先打印整机write IO统计，再执行_exit安全退出，避免丢失采样指标
  * @param sig 触发的信号值，函数内未使用
  */
-static void sig_handler(int sig) {
-	(void)sig;
-	print_stats();
-	_exit(0);
-}
-
 /**
  * @brief RingBuffer事件回调函数，内核捕获write系统调用完成事件后libbpf自动触发
  * 格式化打印：进程PID、文件fd、请求写入字节、实际写入字节、进程名、文件路径
@@ -68,6 +62,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 	// 实时打印单条write系统调用IO事件
 	LOG("PID=%-6d FD=%-4d REQ=%-8lld ACTUAL=%-8lld %-16s %s | ", e->pid, e->fd, (long long)e->count, (long long)e->real_count, e->comm, e->path_name_[0] ? e->path_name_ : "(unknown)"); log_col_ns(e->latency_ns, 10000, 100000); printf("\n");
+	return 0;
 }
 
 /**
@@ -108,9 +103,6 @@ int write_run(int poll_timeout_ms, bool enable,
 	}
 
 	// 注册终止信号，实现Ctrl+C优雅退出并打印全局write统计
-	signal(SIGINT, sig_handler);
-	signal(SIGTERM, sig_handler);
-
 	// 2. 创建RingBuffer，绑定内核rb环形缓冲区与事件处理回调handle_event
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
 	if (!rb) {

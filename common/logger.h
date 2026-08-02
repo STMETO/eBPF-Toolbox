@@ -14,6 +14,10 @@
 #define C_BOLD   "\033[1m"
 #define C_RESET  "\033[0m"
 
+/* 组合观测时，一个模块的一整行/面板应作为不可分割的输出块。 */
+static inline void log_output_lock(void) { flockfile(stdout); }
+static inline void log_output_unlock(void) { funlockfile(stdout); }
+
 /* ── Timestamp ───────────────────────────────────────────── */
 static inline void log_ts(char *buf, size_t len)
 {

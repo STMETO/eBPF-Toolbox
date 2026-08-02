@@ -116,7 +116,6 @@ int trace_enter(struct trace_event_raw_sys_enter *args)
 * @param args tracepoint原生返回参数结构体（本程序未读取返回值）
 * @return 0 BPF tracepoint固定返回值
 */
-SEC("kretprobe/udp_sendmsg")
 SEC("tracepoint/raw_syscalls/sys_exit")
 int trace_exit(struct trace_event_raw_sys_exit *args)
 {

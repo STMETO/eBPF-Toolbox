@@ -41,8 +41,6 @@ static void print_stats(void)
 	printf(C_CYAN C_BOLD "════════════════════════════\n" C_RESET);
 }
 
-static void sig_handler(int sig) { (void)sig; print_stats(); _exit(0); }
-
 /* ── 事件回调 ────────────────────────────────────────────── */
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
@@ -89,9 +87,6 @@ int preempt_run(int poll_timeout_ms, bool enable,
 	err = bpf_map__update_elem(skel->maps.ctrl_map, &key, sizeof(key),
 				   &ctrl, sizeof(ctrl), BPF_ANY);
 	if (err < 0) { fprintf(stderr, "设置控制开关失败: %s\n", strerror(-err)); goto cleanup; }
-
-	signal(SIGINT, sig_handler);
-	signal(SIGTERM, sig_handler);
 
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
 	if (!rb) { err = -ENOMEM; fprintf(stderr, "创建RingBuffer失败\n"); goto cleanup; }

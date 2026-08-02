@@ -29,22 +29,26 @@ struct TcpMonitor_ctrl {
 	bpf_bool_t enable;
 	bpf_u64_t  min_latency_ns;
 	bpf_s32_t  target_pid;
+	bpf_u64_t  pid_ns_dev;
+	bpf_u64_t  pid_ns_ino;
 };
 
 /* ===================== 建连临时会话缓存结构体 ===================== */
 /**
  * @struct tcp_sess
  * @brief 缓存connect阶段上下文，关联connect入口与握手完成事件
- * @note Map存储key为pid_tgid(64位，高32位TGID、低32位TID)
+ * @note sess_map 以 struct sock 地址为 key，跨软中断上下文保持连接归属
  */
 struct tcp_sess {
 	bpf_u64_t start_ts;		// connect调用时刻内核纳秒时间戳，握手完成后计算建连耗时
 	bpf_u32_t tgid;
-	bpf_s32_t pid;
+	bpf_u32_t tid;
+	bpf_u32_t retrans_cnt;
+	bpf_bool_t handshake_reported;
 	bpf_u16_t sport, dport;
-	bpf_u32_t saddr_v4, daddr_v4;	// IPv4源地址,IPv4目标地址
-	int af;		// af 地址族：AF_INET=IPv4 / AF_INET6=IPv6
-	bpf_u8_t saddr_v6[16], daddr_v6[16];	// IPv6源地址,IPv6目标地址
+	bpf_s32_t af;
+	bpf_u32_t saddr_v4, daddr_v4;
+	bpf_u8_t saddr_v6[16], daddr_v6[16];
 	bpf_s8_t comm[TASK_COMM_LEN];
 };
 
@@ -64,8 +68,8 @@ struct TcpMonitor_event {
 	bpf_u64_t ts_ns;
 	bpf_u64_t latency_ns;
 	bpf_u32_t retrans_cnt;			// 连接累计重传总次数：握手时0、重传时当前累计值、关闭时全量汇总值
-	bpf_s32_t pid;
 	bpf_u32_t tgid;
+	bpf_u32_t tid;
 	bpf_u16_t sport, dport;
 	bpf_u32_t saddr_v4, daddr_v4;
 	int af;
@@ -92,25 +96,19 @@ struct TcpMonitor_event {
  * @field hs_max_comm 产生最大握手延迟的进程名称
  */
 struct TcpMonitor_stats {
+	bpf_u64_t connect_attempted;
 	bpf_u64_t hs_count, hs_total_ns, hs_max_ns;
 	bpf_u64_t rt_count;
 	bpf_u64_t cl_count, cl_total_ns, cl_max_ns;
-	bpf_u32_t hs_max_sport, hs_max_dport;
+	bpf_u64_t filtered_latency;
+	bpf_u64_t ringbuf_dropped;
+	bpf_u64_t map_update_failed;
+	bpf_u64_t untracked_events;
+	bpf_u16_t hs_max_sport, hs_max_dport;
+	bpf_s32_t hs_max_af;
 	bpf_u32_t hs_max_saddr, hs_max_daddr;
+	bpf_u8_t  hs_max_saddr_v6[16], hs_max_daddr_v6[16];
 	bpf_s8_t  hs_max_comm[TASK_COMM_LEN];
-};
-
-/* ===================== 连接重传次数追踪结构体 ===================== */
-/**
- * @struct retrans_track
- * @brief 以sock内核对象指针为key，记录单条TCP连接累计重传次数
- * @note 触发tcp_retransmit_skb时计数+1；tcp_close时取出总计数上报后删除本条记录
- * @field count 当前连接累计重传报文数量
- * @field addr sock结构体内核虚拟地址，作为Map检索key
- */
-struct retrans_track {
-	bpf_u32_t count;
-	bpf_u64_t addr;
 };
 
 /* ===================== 用户态对外API声明，仅非BPF编译时生效 ===================== */

@@ -76,9 +76,9 @@ endif
 .PHONY: all clean
 
 all: $(TARGET)
-	@echo -e "\033[32m========================================="
-	@echo "  编译完成！可执行文件: ./$(TARGET)"
-	@echo -e "=========================================\033[0m"
+	@printf '\033[32m=========================================\n'
+	@printf '  编译完成！可执行文件: ./$(TARGET)\n'
+	@printf '=========================================\033[0m\n'
 
 clean:
 	$(call msg,CLEAN)
@@ -112,6 +112,7 @@ $$(OUTPUT)/$(1).bpf.o: $$(BPF_SRC_$(1)) $(VMLINUX_H) $(BPFTOOL)
 	$(Q)mkdir -p $$(dir $$@)
 	$(Q)$$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
 		$$(INCLUDES) $$(CLANG_BPF_SYS_INCLUDES) \
+		-MMD -MP -MF $$@.d -MT $$@ \
 		-c $$< -o $$@.tmp
 	$(Q)$(BPFTOOL) gen object $$@ $$@.tmp
 	$(Q)rm -f $$@.tmp
@@ -124,7 +125,7 @@ $$(OUTPUT)/$(1)/skel.h: $$(OUTPUT)/$(1).bpf.o
 $$(OUTPUT)/$(1)/user.o: $(1)/user.c $$(OUTPUT)/$(1)/skel.h $(LIBBPF_OBJ) | $(OUTPUT)
 	$(call msg,CC,$(1)/user.c)
 	$(Q)mkdir -p $$(dir $$@)
-	$(Q)$$(CC) $$(CFLAGS) $$(INCLUDES) -c $$< -o $$@
+	$(Q)$$(CC) $$(CFLAGS) $$(INCLUDES) -MMD -MP -MF $$@.d -c $$< -o $$@
 endef
 
 $(foreach mod,$(MOD_DIRS),$(eval $(call BUILD_MODULE,$(mod))))
@@ -135,12 +136,12 @@ $(foreach mod,$(MOD_DIRS),$(eval $(call BUILD_MODULE,$(mod))))
 $(OUTPUT)/common/main.o: common/main.c
 	$(call msg,CC,common/main.c)
 	$(Q)mkdir -p $(dir $@)
-	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -MF $@.d -c $< -o $@
 
 $(OUTPUT)/common/cli.o: common/cli.c
 	$(call msg,CC,common/cli.c)
 	$(Q)mkdir -p $(dir $@)
-	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -MF $@.d -c $< -o $@
 
 # ============================================================
 # 链接
@@ -156,3 +157,5 @@ $(TARGET): $(MAIN_OBJ) $(CLI_OBJ) $(USER_LIB) $(LIBBPF_OBJ) $(BLAZESYM_LIB)
 
 .DELETE_ON_ERROR:
 .SECONDARY:
+
+-include $(BPF_OBJS:%=%.d) $(USER_OBJS:%=%.d) $(MAIN_OBJ).d $(CLI_OBJ).d

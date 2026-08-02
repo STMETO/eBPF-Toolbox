@@ -60,12 +60,6 @@ static void print_stats(void)
  * @brief SIGINT(Ctrl+C)/SIGTERM信号回调，捕获中断后打印统计并安全退出
  * @param sig 触发的信号值，未使用
  */
-static void sig_handler(int sig) {
-	(void)sig;
-	print_stats();
-	_exit(0);
-}
-
 /**
  * @brief RingBuffer事件回调函数，内核推送UDP发包事件后自动执行
  * @param ctx 回调自定义上下文，未使用
@@ -131,9 +125,6 @@ int udp_monitor_run(int poll_timeout_ms, bool enable,
 	}
 
 	// 3. 注册中断信号捕获，实现Ctrl+C优雅退出
-	signal(SIGINT, sig_handler);
-	signal(SIGTERM, sig_handler);
-
 	// 4. 创建RingBuffer，绑定内核rb环形缓冲区与事件回调handle_event
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
 	if (!rb) {

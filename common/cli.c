@@ -1,9 +1,12 @@
 #include <argp.h>
 #include <errno.h>
+#include <limits.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "common/cli.h"
 #include "common/registry.h"
@@ -47,31 +50,75 @@ static const struct module_entry *find_by_mode(enum app_mode mode)
 	return NULL;
 }
 
+static long parse_long_arg(struct argp_state *state, const char *name,
+			   const char *arg, long min, long max)
+{
+	char *end = NULL;
+	long value;
+
+	errno = 0;
+	value = strtol(arg, &end, 10);
+	if (errno == ERANGE || end == arg || *end != '\0' || value < min || value > max)
+		argp_error(state, "invalid %s: %s (%ld-%ld)", name, arg, min, max);
+	return value;
+}
+
+static uint64_t parse_u64_arg(struct argp_state *state, const char *name,
+			      const char *arg)
+{
+	char *end = NULL;
+	unsigned long long value;
+
+	if (!arg || arg[0] == '-')
+		argp_error(state, "invalid %s: %s (must be an unsigned integer)",
+			   name, arg ? arg : "?");
+	errno = 0;
+	value = strtoull(arg, &end, 10);
+	if (errno == ERANGE || end == arg || *end != '\0')
+		argp_error(state, "invalid %s: %s (must be an unsigned integer)", name, arg);
+	return (uint64_t)value;
+}
+
 static error_t parse_opt(int key, char *arg, struct argp_state *state)
 {
 	struct app_options *opts = state->input;
-	char *end = NULL;
 
 	switch (key) {
 	case 'm': {
-		const struct module_entry *m = arg ? find_by_name(arg) : NULL;
-		if (m) { opts->mode = m->mode; break; }
-		argp_error(state, "invalid mode: %s (已支持: %s)", arg ? arg : "?", build_mode_str());
+		char modes[512];
+		char *save = NULL;
+		char *name;
+
+		if (!arg || strlen(arg) >= sizeof(modes))
+			argp_error(state, "invalid mode list (已支持: %s)", build_mode_str());
+		memcpy(modes, arg, strlen(arg) + 1);
+		for (name = strtok_r(modes, ",", &save); name;
+		     name = strtok_r(NULL, ",", &save)) {
+			const struct module_entry *m = find_by_name(name);
+			if (!m)
+				argp_error(state, "invalid mode: %s (已支持: %s)",
+					   name, build_mode_str());
+			if (m->mode >= 64)
+				argp_error(state, "mode id is too large: %s", name);
+			opts->mode_mask |= 1ULL << m->mode;
+			if (opts->mode == APP_MODE_UNSET)
+				opts->mode = m->mode;
+		}
+		if (!opts->mode_mask)
+			argp_error(state, "empty mode list");
 		break;
 	}
 	case 't':
-		opts->poll_timeout_ms = (int)strtol(arg, &end, 10);
-		if (opts->poll_timeout_ms <= 0 || opts->poll_timeout_ms > 60000)
-			argp_error(state, "invalid timeout: %s (1-60000)", arg);
+		opts->poll_timeout_ms = (int)parse_long_arg(state, "timeout", arg, 1, 60000);
 		break;
 	case 'e':
-		opts->enable = (strtol(arg, &end, 10) == 1);
+		opts->enable = parse_long_arg(state, "enable", arg, 0, 1) == 1;
 		break;
 	case 'p':
-		opts->target_pid = (int)strtol(arg, &end, 10);
+		opts->target_pid = (int32_t)parse_long_arg(state, "pid", arg, 0, INT32_MAX);
 		break;
 	case 'd':
-		opts->min_delay_ns = (int)strtol(arg, &end, 10);
+		opts->min_delay_ns = parse_u64_arg(state, "delay", arg);
 		break;
 	default:
 		return ARGP_ERR_UNKNOWN;
@@ -87,7 +134,8 @@ static const char g_doc[] =
 	"  文件:    fs_open, fs_read, fs_write, block_io\n"
 	"  内存:    dr_snoop, oom_killer, proc_stat, slab_rate\n"
 	"  网络:    tcp_monitor, udp_monitor\n\n"
-	"示例: sudo ./test -m block_io -p 1234 -d 100000 -t 100";
+	"多个模式用逗号分隔。\n"
+	"示例: sudo ./test -m context,mutexlock,fs_open -p 1234 -d 100000 -t 100";
 
 static const struct argp g_argp = {
 	.options = g_options, .parser = parse_opt,
@@ -98,13 +146,14 @@ int app_parse_args(int argc, char **argv, struct app_options *opts)
 {
 	if (!opts) return -EINVAL;
 	opts->mode = APP_MODE_UNSET;
+	opts->mode_mask = 0;
 	opts->poll_timeout_ms = 100;
 	opts->enable = true;
 	opts->target_pid = 0;
 	opts->min_delay_ns = 0;
 	if (argp_parse(&g_argp, argc, argv, 0, NULL, opts) != 0)
 		return -EINVAL;
-	if (opts->mode == APP_MODE_UNSET) {
+	if (opts->mode == APP_MODE_UNSET || opts->mode_mask == 0) {
 		argp_help(&g_argp, stdout, ARGP_HELP_STD_HELP, argv[0]);
 		return -EINVAL;
 	}
@@ -122,10 +171,25 @@ static void app_signal_handler(int sig) { (void)sig; g_exit_requested = 1; }
 int app_setup_signal_handlers(void)
 {
 	struct sigaction sa = {.sa_handler = app_signal_handler};
+	sigemptyset(&sa.sa_mask);
 	if (sigaction(SIGINT,  &sa, NULL) < 0) return -errno;
 	if (sigaction(SIGTERM, &sa, NULL) < 0) return -errno;
 	return 0;
 }
 
 bool app_should_exit(void) { return g_exit_requested != 0; }
+void app_request_exit(void) { g_exit_requested = 1; }
 void app_reset_exit_flag(void) { g_exit_requested = 0; }
+
+int app_get_pid_namespace(uint64_t *dev, uint64_t *ino)
+{
+	struct stat st;
+
+	if (!dev || !ino)
+		return -EINVAL;
+	if (stat("/proc/self/ns/pid", &st) < 0)
+		return -errno;
+	*dev = (uint64_t)st.st_dev;
+	*ino = (uint64_t)st.st_ino;
+	return 0;
+}

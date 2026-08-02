@@ -2,8 +2,10 @@
 #include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include "common/cli.h"
 #include "common/types.h"
@@ -26,28 +28,60 @@ static void print_stats(void)
 
 	struct Mutexlock_stats s = {};
 	int key = 0;
-	// 读取全局统计数组唯一条目；读取失败 或 无任何锁竞争事件直接返回
-	if (bpf_map__lookup_elem(g_skel->maps.stats_map, &key, sizeof(key),
-				 &s, sizeof(s), 0) || !s.contention_count)
+	int ncpus = libbpf_num_possible_cpus();
+	size_t stride = (sizeof(struct Mutexlock_stats) + 7) & ~((size_t)7);
+	void *values;
+
+	if (ncpus <= 0)
+		return;
+	values = calloc((size_t)ncpus, stride);
+	if (!values)
+		return;
+	if (bpf_map_lookup_elem(bpf_map__fd(g_skel->maps.stats_map), &key, values)) {
+		free(values);
+		return;
+	}
+	for (int cpu = 0; cpu < ncpus; cpu++) {
+		const struct Mutexlock_stats *v =
+			(const struct Mutexlock_stats *)((char *)values + (size_t)cpu * stride);
+		s.attempted += v->attempted;
+		s.contention_count += v->contention_count;
+		s.filtered_delay += v->filtered_delay;
+		s.ringbuf_dropped += v->ringbuf_dropped;
+		s.map_update_failed += v->map_update_failed;
+		s.lookup_missed += v->lookup_missed;
+		s.wait_total_ns += v->wait_total_ns;
+		if (v->wait_max_ns > s.wait_max_ns) {
+			s.wait_max_ns = v->wait_max_ns;
+			s.max_lock_addr = v->max_lock_addr;
+			s.max_owner_pid = v->max_owner_pid;
+			s.max_contender_pid = v->max_contender_pid;
+			memcpy(s.max_owner_name, v->max_owner_name, sizeof(s.max_owner_name));
+			memcpy(s.max_contender_name, v->max_contender_name, sizeof(s.max_contender_name));
+		}
+	}
+	free(values);
+	if (!s.attempted && !s.contention_count)
 		return;
 
-	fprintf(stderr, "\n");
+	log_output_lock();
+	printf("\n");
 	// 彩色打印统计表头
 	printf(C_CYAN C_BOLD "══════ 互斥锁统计 ══════\n" C_RESET);
-	printf("  竞争: %" PRIu64 " 次\n", s.contention_count);
+	printf("  慢路径: %" PRIu64 "  上报: %" PRIu64 "  阈值过滤: %" PRIu64 "\n",
+	       s.attempted, s.contention_count, s.filtered_delay);
+	if (s.contention_count) {
+		printf("  平均等待: %" PRIu64 " ns  最大等待: %" PRIu64 " ns\n",
+		       s.wait_total_ns / s.contention_count, s.wait_max_ns);
+		printf("  最慢锁: 0x%" PRIx64 " owner=%d(%s) contender=%d(%s)\n",
+		       s.max_lock_addr, s.max_owner_pid, s.max_owner_name,
+		       s.max_contender_pid, s.max_contender_name);
+	}
+	printf("  健康: ringbuf_drop=%" PRIu64 " map_fail=%" PRIu64
+	       " lookup_miss=%" PRIu64 "\n",
+	       s.ringbuf_dropped, s.map_update_failed, s.lookup_missed);
 	printf(C_CYAN C_BOLD "════════════════════════════\n" C_RESET);
-}
-
-/**
- * @brief SIGINT(Ctrl+C)/SIGTERM 信号捕获回调
- * 收到终止信号后先打印全局锁竞争统计，再安全退出程序，不丢失汇总指标
- * @param sig 触发的信号值，函数内未使用
- */
-static void sig_handler(int sig)
-{
-	(void)sig;
-	print_stats();
-	_exit(0);
+	log_output_unlock();
 }
 
 /**
@@ -65,11 +99,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	(void)data_sz;
 
 	// 打印锁内核地址、持有锁进程信息、红色标记阻塞竞争进程
-	LOG("LOCK=0x%-16" PRIx64 " | OWNER: PID=%-6d %-16s PRIO=%-4d | "
-	    C_RED "CONTENDER" C_RESET ": PID=%-6d %-16s PRIO=%-4d | WAIT: ",
-	    e->ptr, e->owner_pid, e->owner_name, e->owner_prio,
-	    e->contender_pid, e->contender_name, e->contender_prio);
+	log_output_lock();
+	LOG("LOCK=0x%-16" PRIx64 " | OWNER: TGID=%-6d TID=%-6d %-16s PRIO=%-4d | "
+	    C_RED "CONTENDER" C_RESET ": TGID=%-6d TID=%-6d %-16s PRIO=%-4d | WAIT: ",
+	    e->ptr, e->owner_tgid, e->owner_pid, e->owner_name, e->owner_prio,
+	    e->contender_tgid, e->contender_pid, e->contender_name, e->contender_prio);
 	log_col_ns(e->contention_ns, 100000, 1000000); printf("\n");
+	log_output_unlock();
 	return 0;
 }
 
@@ -78,7 +114,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
  * @param poll_timeout_ms ring_buffer轮询阻塞超时时间(毫秒)
  * @param enable 下发给内核BPF的监控总开关
  * @param target_pid PID过滤，0=监控所有进程，非0仅采集该TGID进程产生的锁竞争
- * @param min_delay_ns 锁持有时长过滤阈值（当前内核逻辑预留未使用）
+ * @param min_delay_ns 锁竞争等待时间过滤阈值
  * @return int 0=正常退出，非0=异常错误码
  */
 int mutexlock_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t min_delay_ns)
@@ -87,6 +123,13 @@ int mutexlock_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u6
 	struct ring_buffer *rb = NULL;
 	const int key = 0;
 	int err = 0;
+	bpf_u64_t pid_ns_dev, pid_ns_ino;
+
+	err = app_get_pid_namespace(&pid_ns_dev, &pid_ns_ino);
+	if (err) {
+		fprintf(stderr, "读取 PID namespace 失败: %s\n", strerror(-err));
+		return 1;
+	}
 
 	// 1. 打开并加载BPF骨架ELF，内核verifier校验BPF程序合法性
 	skel = mutexlock_bpf__open_and_load();
@@ -100,7 +143,9 @@ int mutexlock_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u6
 	struct Mutexlock_ctrl ctrl = {
 		.enable = enable,
 		.min_delay_ns = min_delay_ns,
-		.target_pid = target_pid
+		.target_pid = target_pid,
+		.pid_ns_dev = pid_ns_dev,
+		.pid_ns_ino = pid_ns_ino,
 	};
 	err = bpf_map__update_elem(skel->maps.ctrl_map, &key, sizeof(key),
 				   &ctrl, sizeof(ctrl), BPF_ANY);
@@ -108,10 +153,6 @@ int mutexlock_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u6
 		fprintf(stderr, "设置控制开关失败: %s\n", strerror(-err));
 		goto cleanup;
 	}
-
-	// 注册中断信号捕获，实现Ctrl+C优雅退出并打印统计
-	signal(SIGINT, sig_handler);
-	signal(SIGTERM, sig_handler);
 
 	// 2. 创建RingBuffer，绑定内核rb环形缓冲区与事件处理回调
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
@@ -121,7 +162,7 @@ int mutexlock_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u6
 		goto cleanup;
 	}
 
-	// 3. 挂载全部kprobe探针：mutex_lock / mutex_unlock / __mutex_lock_slowpath
+	// 3. 挂载 __mutex_lock_slowpath 的入口/返回探针
 	err = mutexlock_bpf__attach(skel);
 	if (err) {
 		fprintf(stderr, "挂载BPF程序失败\n");
@@ -129,14 +170,17 @@ int mutexlock_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u6
 	}
 
 	// 打印程序启动横幅与当前PID过滤规则
+	log_output_lock();
 	log_banner("互斥锁竞争监控", enable);
 	if (target_pid)
 		LOG("过滤 PID=%d\n", target_pid);
 
 	// 打印实时事件输出表头与分隔线
-	LOG_HDR("%-20s %-7s %-16s %-5s   %-7s %-16s %-5s",
-		"LOCK_ADDR", "OWNER", "O_NAME", "PRIO", "CTENDER", "C_NAME", "PRIO");
+	LOG_HDR("%-20s %-7s %-7s %-16s %-5s   %-7s %-7s %-16s %-5s",
+		"LOCK_ADDR", "O_TGID", "O_TID", "O_NAME", "PRIO",
+		"C_TGID", "C_TID", "C_NAME", "PRIO");
 	LOG_SEP();
+	log_output_unlock();
 
 	// 4. 主循环：阻塞轮询ringbuf，持续消费内核下发的锁竞争实时事件
 	while (!app_should_exit()) {

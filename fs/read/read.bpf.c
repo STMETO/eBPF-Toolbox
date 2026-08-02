@@ -15,7 +15,7 @@
 
  // BPF追踪程序许可证，tracepoint类必须GPL双协议才可正常加载内核
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
- 
+
  // ctrl_map、stats_map全局数组统一固定key值
 const int ctrl_key = 0;
  
@@ -86,7 +86,7 @@ static __always_inline struct Read_ctrl *get_ctrl(void)
 {
 	return bpf_map_lookup_elem(&ctrl_map, (void *)&ctrl_key);
 }
- 
+
  /*
   * fill_path_from_fd — 工具函数：通过文件描述符fd反向解析对应文件路径
   * 内核结构体逐级读取链路：task_struct -> files_struct -> fd数组 -> struct file -> dentry -> d_name文件名
@@ -166,7 +166,7 @@ int read_entry(struct trace_event_raw_sys_enter *ctx)
 	// 读取当前进程名称
 	bpf_get_current_comm(entry.comm, sizeof(entry.comm));
 	// 调用工具函数，通过fd反向解析文件路径
-	fill_path_from_fd(entry.fd, entry.path_name_, FS_READ_PATH_SIZE);
+	fill_path_from_fd(entry.fd, (char *)entry.path_name_, FS_READ_PATH_SIZE);
 
 	// 将本条read调用上下文存入tid_map哈希，等待出口追踪点匹配读取
 	bpf_map_update_elem(&tid_map, &tid, &entry, BPF_ANY);
@@ -248,4 +248,3 @@ int read_exit(struct trace_event_raw_sys_exit *ctx)
 
 	return 0;
 }
- 

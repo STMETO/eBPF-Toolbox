@@ -2,6 +2,7 @@
 #define COMMON_CLI_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 /**
  * 程序运行模式枚举
@@ -37,11 +38,12 @@ enum app_mode {
  * 存储命令行解析后的所有配置参数
  */
 struct app_options {
-	enum app_mode mode;         // 运行模式（必须指定）
+	enum app_mode mode;         // 首个运行模式（兼容单模块调用）
+	uint64_t mode_mask;         // 逗号分隔的模块组合位图
 	int poll_timeout_ms;        // ring buffer 轮询超时时间（毫秒）
 	bool enable;
-		int target_pid;
-		int min_delay_ns;
+	int32_t target_pid;
+	uint64_t min_delay_ns;
 };
 
 /**
@@ -64,12 +66,19 @@ int app_setup_signal_handlers(void);
  * 返回：true=需要退出，false=继续运行
  */
 bool app_should_exit(void);
+void app_request_exit(void);
 
 /**
  * 重置退出标志位
  * 让程序恢复到“不需要退出”的状态
  */
 void app_reset_exit_flag(void);
+
+/**
+ * 获取当前进程所在 PID namespace 的 nsfs 设备号和 inode。
+ * 这两个值用于 bpf_get_ns_current_pid_tgid()，保证 -p 使用用户可见 PID。
+ */
+int app_get_pid_namespace(uint64_t *dev, uint64_t *ino);
 
 /**
  * 将模式枚举转换为可读字符串（用于日志、打印）

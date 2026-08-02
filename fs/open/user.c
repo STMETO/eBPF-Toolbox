@@ -2,8 +2,10 @@
 #include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include "common/cli.h"
 #include "common/types.h"
@@ -24,37 +26,62 @@ static struct open_bpf *g_skel = NULL;
 	 if (!g_skel)
 		 return;
  
-	 struct Open_stats s = {};
-	 int key = 0;
-	 // 先读取统计map
-	 int ret = bpf_map__lookup_elem(g_skel->maps.stats_map, &key, sizeof(key),
-				  &s, sizeof(s), 0);
-	 // 读取失败，直接返回
-	 if (ret != 0)
-		 return;
-	 // 读取成功，但无任何采样事件，不打印统计
-	 if (!s.count)
-		 return;
+	struct Open_stats s = {};
+	int key = 0;
+	int ncpus = libbpf_num_possible_cpus();
+	size_t stride = (sizeof(struct Open_stats) + 7) & ~((size_t)7);
+	void *values;
+
+	if (ncpus <= 0)
+		return;
+	values = calloc((size_t)ncpus, stride);
+	if (!values)
+		return;
+	if (bpf_map_lookup_elem(bpf_map__fd(g_skel->maps.stats_map), &key, values)) {
+		free(values);
+		return;
+	}
+	for (int cpu = 0; cpu < ncpus; cpu++) {
+		const struct Open_stats *v =
+			(const struct Open_stats *)((char *)values + (size_t)cpu * stride);
+		s.attempted += v->attempted;
+		s.completed += v->completed;
+		s.submitted += v->submitted;
+		s.failed += v->failed;
+		s.filtered_pid += v->filtered_pid;
+		s.filtered_delay += v->filtered_delay;
+		s.ringbuf_dropped += v->ringbuf_dropped;
+		s.map_update_failed += v->map_update_failed;
+		s.lookup_missed += v->lookup_missed;
+		s.total_ns += v->total_ns;
+		if (v->max_ns > s.max_ns) {
+			s.max_ns = v->max_ns;
+			s.max_pid = v->max_pid;
+			memcpy(s.max_comm, v->max_comm, sizeof(s.max_comm));
+		}
+	}
+	free(values);
+	if (!s.attempted && !s.filtered_pid)
+		return;
  
-	 fprintf(stderr, "\n");
+	log_output_lock();
+	printf("\n");
 	 // 彩色打印统计标题面板
 	 printf(C_CYAN C_BOLD "══════ Open 统计 ══════\n" C_RESET);
-	 printf("  采样: %" PRIu64 " 次\n", s.count);
+	printf("  尝试: %" PRIu64 "  完成: %" PRIu64 "  上报: %" PRIu64
+	       "  失败: %" PRIu64 "\n",
+	       s.attempted, s.completed, s.submitted, s.failed);
+	if (s.completed)
+		printf("  平均: %" PRIu64 " ns  最大: %" PRIu64 " ns (PID=%d %s)\n",
+		       s.total_ns / s.completed, s.max_ns, s.max_pid, s.max_comm);
+	printf("  过滤: PID=%" PRIu64 " 延迟=%" PRIu64
+	       "  丢弃: ringbuf=%" PRIu64 " map=%" PRIu64 " miss=%" PRIu64 "\n",
+	       s.filtered_pid, s.filtered_delay, s.ringbuf_dropped,
+	       s.map_update_failed, s.lookup_missed);
 	 printf(C_CYAN C_BOLD "══════════════════════\n" C_RESET);
+	log_output_unlock();
  }
  
-
-/**
- * @brief SIGINT(Ctrl+C) / SIGTERM 终止信号回调函数
- * 收到退出信号先打印全局open统计，再执行_exit安全退出，避免丢失整机采样数据
- * @param sig 触发的信号值，函数内未使用
- */
-static void sig_handler(int sig)
-{
-	(void)sig;
-	print_stats();
-	_exit(0);
-}
 
 /**
  * @brief RingBuffer事件回调函数，内核捕获openat事件后libbpf自动触发
@@ -70,8 +97,16 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	(void)ctx;
 	(void)data_sz;
 
-	// 实时打印单条open系统调用事件
-	LOG("PID=%-6d FD=%-4d %-16s %s | ", e->pid, e->fd, e->comm, e->path_name_); log_col_ns(e->latency_ns, 10000, 100000); printf("\n");
+	log_output_lock();
+	LOG("PID=%-6d TID=%-6d DIRFD=%-4d %-16s %s | ",
+	    e->pid, e->tid, e->dirfd, e->comm, e->path_name_);
+	if (e->ret < 0)
+		printf("ERR=%s (%lld) | ", strerror((int)-e->ret), (long long)e->ret);
+	else
+		printf("FD=%d | ", e->fd);
+	log_col_ns(e->latency_ns, 10000, 100000);
+	printf("\n");
+	log_output_unlock();
 	return 0;
 }
 
@@ -80,7 +115,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
  * @param poll_timeout_ms ring_buffer阻塞轮询超时毫秒
  * @param enable 下发至内核BPF的总开关
  * @param target_pid PID过滤，0监控全部进程，非0仅采集该TGID进程的open事件
- * @param min_delay_ns openat调用耗时过滤阈值（内核预留配置）
+ * @param min_delay_ns openat调用耗时过滤阈值
  * @return int 0正常退出，非0代表底层异常错误码
  */
 int open_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t min_delay_ns)
@@ -89,6 +124,13 @@ int open_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t m
 	struct ring_buffer *rb = NULL;
 	const int key = 0;
 	int err = 0;
+	bpf_u64_t pid_ns_dev, pid_ns_ino;
+
+	err = app_get_pid_namespace(&pid_ns_dev, &pid_ns_ino);
+	if (err) {
+		fprintf(stderr, "读取 PID namespace 失败: %s\n", strerror(-err));
+		return 1;
+	}
 
 	// 1. 打开并加载BPF骨架ELF，内核verifier校验BPF程序合法性
 	skel = open_bpf__open_and_load();
@@ -102,7 +144,9 @@ int open_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t m
 	struct Open_ctrl ctrl = {
 		.enable = enable,
 		.min_delay_ns = min_delay_ns,
-		.target_pid = target_pid
+		.target_pid = target_pid,
+		.pid_ns_dev = pid_ns_dev,
+		.pid_ns_ino = pid_ns_ino,
 	};
 	err = bpf_map__update_elem(skel->maps.ctrl_map, &key, sizeof(key),
 				   &ctrl, sizeof(ctrl), BPF_ANY);
@@ -112,9 +156,6 @@ int open_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t m
 	}
 
 	// 注册中断信号，实现Ctrl+C优雅退出并打印统计
-	signal(SIGINT, sig_handler);
-	signal(SIGTERM, sig_handler);
-
 	// 2. 创建RingBuffer，绑定内核rb环形缓冲区与事件处理回调handle_event
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
 	if (!rb) {
@@ -131,12 +172,14 @@ int open_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64_t m
 	}
 
 	// 打印程序启动横幅与PID过滤提示
+	log_output_lock();
 	log_banner("文件 Open 监控", enable);
 	if (target_pid)
 		LOG("过滤 PID=%d\n", target_pid);
 	// 打印实时输出表头与分隔线
-	LOG_HDR("%-7s %-5s %-16s %s", "PID", "FD", "COMM", "PATH");
+	LOG_HDR("%-7s %-7s %-6s %-16s %s", "PID", "TID", "DIRFD", "COMM", "PATH");
 	LOG_SEP();
+	log_output_unlock();
 
 	// 4. 主循环：阻塞轮询ringbuf，持续消费内核下发的open实时事件
 	while (!app_should_exit()) {

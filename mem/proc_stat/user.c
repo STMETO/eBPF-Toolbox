@@ -9,8 +9,6 @@
 #include "mem/proc_stat/skel.h"
 
 static struct proc_stat_bpf *g_skel = NULL;
-static void sig_handler(int sig) { (void)sig; _exit(0); }
-
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	const struct ProcStat_event *e = data;
@@ -33,7 +31,6 @@ int proc_stat_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u6
 	struct ProcStat_ctrl ctrl = {.enable = enable, .min_delay_ns = min_delay_ns, .target_pid = target_pid};
 	bpf_map__update_elem(skel->maps.ctrl_map, &key, sizeof(key), &ctrl, sizeof(ctrl), BPF_ANY);
 
-	signal(SIGINT, sig_handler); signal(SIGTERM, sig_handler);
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
 	if (!rb) { fprintf(stderr, "ringbuf fail\n"); goto cleanup; }
 	err = proc_stat_bpf__attach(skel);

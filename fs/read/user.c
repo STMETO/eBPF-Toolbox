@@ -45,12 +45,6 @@ static void print_stats(void)
  * 捕获退出信号后先打印全局read IO统计，再安全退出，不丢失整机采样指标
  * @param sig 触发信号值，函数内未使用
  */
-static void sig_handler(int sig) {
-	(void)sig;
-	print_stats();
-	_exit(0);
-}
-
 /**
  * @brief RingBuffer事件回调，内核捕获read系统调用完成后libbpf自动触发
  * 格式化打印进程PID、文件fd、实际读取字节、进程名、文件路径
@@ -109,9 +103,6 @@ int read_run(int poll_timeout_ms, bool enable,
 	}
 
 	// 注册中断信号，实现Ctrl+C优雅退出、打印全局read统计
-	signal(SIGINT, sig_handler);
-	signal(SIGTERM, sig_handler);
-
 	// 2. 创建RingBuffer，绑定内核rb环形缓冲区与事件处理回调handle_event
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
 	if (!rb) {

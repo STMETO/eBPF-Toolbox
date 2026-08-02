@@ -47,12 +47,6 @@ static void print_stats(void)
  * 捕获退出信号后先打印全局磁盘IO统计，再安全退出，避免丢失整机指标
  * @param sig 触发信号值，函数内未使用
  */
-static void sig_handler(int sig) {
-	(void)sig;
-	print_stats();
-	_exit(0);
-}
-
 /**
  * @brief 将数字RW编码转换为可读字符串标识
  * @param r 内核下发的数字类型：1=R读 2=W写 3=D丢弃 4=F刷新
@@ -128,9 +122,6 @@ int block_io_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64
 	}
 
 	// 注册中断信号，实现Ctrl+C优雅退出并打印统计
-	signal(SIGINT, sig_handler);
-	signal(SIGTERM, sig_handler);
-
 	// 2. 创建RingBuffer，绑定内核rb环形缓冲区与事件处理回调handle_event
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
 	if (!rb) {

@@ -49,13 +49,6 @@ static void print_stats(void)
  * @brief SIGINT(Ctrl+C)/SIGTERM 信号回调，捕获中断后打印统计并安全退出
  * @param sig 触发信号值，未使用
  */
-static void sig_handler(int sig)
-{
-	(void)sig;
-	print_stats();
-	_exit(0);
-}
-
 /**
  * @brief RingBuffer事件回调函数，内核推送mq收发事件后libbpf自动调用
  * @param ctx 回调自定义上下文，未使用
@@ -116,9 +109,6 @@ int msgqueue_run(int poll_timeout_ms, bool enable, bpf_s32_t target_pid, bpf_u64
 	}
 
 	// 注册中断信号，实现Ctrl+C优雅退出、打印统计
-	signal(SIGINT, sig_handler);
-	signal(SIGTERM, sig_handler);
-
 	// 2. 创建RingBuffer，绑定内核rb环形缓冲区与事件回调handle_event
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
 	if (!rb) {
