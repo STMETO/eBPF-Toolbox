@@ -29,6 +29,10 @@ static void print_stats(void)
 	struct Mutexlock_stats s = {};
 	int key = 0;
 	int ncpus = libbpf_num_possible_cpus();
+	/*
+	 * per-CPU value 的用户态缓冲区必须按 8 字节步长排列；只分配结构体
+	 * 大小乘 CPU 数会在结构体非 8 字节对齐时错读后续 CPU 数据。
+	 */
 	size_t stride = (sizeof(struct Mutexlock_stats) + 7) & ~((size_t)7);
 	void *values;
 
@@ -51,6 +55,7 @@ static void print_stats(void)
 		s.map_update_failed += v->map_update_failed;
 		s.lookup_missed += v->lookup_missed;
 		s.wait_total_ns += v->wait_total_ns;
+		/* max 及其锁地址/owner/contender 是一个逻辑快照，必须一起更新。 */
 		if (v->wait_max_ns > s.wait_max_ns) {
 			s.wait_max_ns = v->wait_max_ns;
 			s.max_lock_addr = v->max_lock_addr;

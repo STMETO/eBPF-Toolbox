@@ -60,7 +60,9 @@ sudo ./test -m context,mutexlock,fs_open,tcp_monitor,dr_snoop \
 ```
 
 - `-p` 按启动工具所在 PID namespace 的用户可见 TGID 过滤，`0` 表示全部。
-- `-d` 是最小延迟阈值，单位 ns；低于阈值的明细不会进入 ringbuf。
+- `-d` 是最小延迟阈值，单位 ns；低于阈值的延迟明细不会进入 ringbuf。
+  TCP 模块将它用于握手延迟；重传没有耗时字段，close 事件保留用于输出
+  完整生命周期和累计重传数。
 - `-t` 是 ringbuf poll 的最大等待时间，事件到达时会提前唤醒。
 - `-e 0` 保持程序加载和 attach，但关闭内核态采集。
 

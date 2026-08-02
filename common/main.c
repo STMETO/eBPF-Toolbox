@@ -11,6 +11,11 @@ struct module_thread {
 	int result;
 };
 
+/*
+ * 每个模块拥有独立 skeleton、ringbuf 和 poll 循环，因此组合模式用一个
+ * pthread 承载一个模块。任一模块失败都会设置公共退出标志，使其他模块
+ * 在下一次 poll 返回后完成统计打印和 skeleton 销毁。
+ */
 static void *run_module_thread(void *arg)
 {
 	struct module_thread *thread = arg;
@@ -55,10 +60,12 @@ int main(int argc, char **argv)
 	       opts.poll_timeout_ms, opts.enable ? 1 : 0);
 
 	if (count == 1) {
+		/* 单模块保留直接调用路径，避免无意义的线程创建开销。 */
 		err = threads[0].module->run(opts.poll_timeout_ms, opts.enable,
 					     opts.target_pid, opts.min_delay_ns);
 	} else {
 		err = 0;
+		/* opts 在 main 返回前始终有效，所有线程只读共享该配置。 */
 		for (int i = 0; i < count; i++) {
 			int rc = pthread_create(&tids[i], NULL, run_module_thread, &threads[i]);
 			if (rc) {

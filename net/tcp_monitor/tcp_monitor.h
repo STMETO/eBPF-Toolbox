@@ -29,8 +29,8 @@ struct TcpMonitor_ctrl {
 	bpf_bool_t enable;
 	bpf_u64_t  min_latency_ns;
 	bpf_s32_t  target_pid;
-	bpf_u64_t  pid_ns_dev;
-	bpf_u64_t  pid_ns_ino;
+	bpf_u64_t  pid_ns_dev;     // 连接发起线程所在 PID namespace 的设备号
+	bpf_u64_t  pid_ns_ino;     // 将内核初始 namespace PID 转为用户可见 PID
 };
 
 /* ===================== 建连临时会话缓存结构体 ===================== */
@@ -41,12 +41,12 @@ struct TcpMonitor_ctrl {
  */
 struct tcp_sess {
 	bpf_u64_t start_ts;		// connect调用时刻内核纳秒时间戳，握手完成后计算建连耗时
-	bpf_u32_t tgid;
-	bpf_u32_t tid;
-	bpf_u32_t retrans_cnt;
-	bpf_bool_t handshake_reported;
-	bpf_u16_t sport, dport;
-	bpf_s32_t af;
+	bpf_u32_t tgid;             // 连接发起者在用户 PID namespace 中的 TGID
+	bpf_u32_t tid;              // 连接发起线程在用户 PID namespace 中的 TID
+	bpf_u32_t retrans_cnt;      // 此 socket 自 connect 后的累计重传数
+	bpf_bool_t handshake_reported; // 防止同一连接重复结算握手
+	bpf_u16_t sport, dport;     // 统一为主机字节序的源/目的端口
+	bpf_s32_t af;               // AF_INET 或 AF_INET6
 	bpf_u32_t saddr_v4, daddr_v4;
 	bpf_u8_t saddr_v6[16], daddr_v6[16];
 	bpf_s8_t comm[TASK_COMM_LEN];
@@ -100,10 +100,10 @@ struct TcpMonitor_stats {
 	bpf_u64_t hs_count, hs_total_ns, hs_max_ns;
 	bpf_u64_t rt_count;
 	bpf_u64_t cl_count, cl_total_ns, cl_max_ns;
-	bpf_u64_t filtered_latency;
-	bpf_u64_t ringbuf_dropped;
-	bpf_u64_t map_update_failed;
-	bpf_u64_t untracked_events;
+	bpf_u64_t filtered_latency; // 低于握手阈值、未输出明细的连接数
+	bpf_u64_t ringbuf_dropped;  // 明细 reserve 失败数，不影响上述聚合计数
+	bpf_u64_t map_update_failed; // socket 会话写入 LRU Map 失败数
+	bpf_u64_t untracked_events; // 全量模式下未找到 socket 会话的事件数
 	bpf_u16_t hs_max_sport, hs_max_dport;
 	bpf_s32_t hs_max_af;
 	bpf_u32_t hs_max_saddr, hs_max_daddr;

@@ -9,8 +9,8 @@ struct Open_ctrl {
 	bpf_bool_t enable;
 	bpf_u64_t  min_delay_ns;
 	bpf_s32_t  target_pid;
-	bpf_u64_t  pid_ns_dev;
-	bpf_u64_t  pid_ns_ino;
+	bpf_u64_t  pid_ns_dev;     // 当前 PID namespace 对应的 nsfs st_dev
+	bpf_u64_t  pid_ns_ino;     // 当前 PID namespace 对应的 nsfs st_ino
 };
 
 /*
@@ -41,17 +41,19 @@ struct Open_event {
  * 同时记录入口、完成、上报、过滤、失败、丢弃以及延迟汇总。
  */
 struct Open_stats {
-	bpf_u64_t attempted;
-	bpf_u64_t completed;
-	bpf_u64_t submitted;
-	bpf_u64_t failed;
-	bpf_u64_t filtered_pid;
-	bpf_u64_t filtered_delay;
-	bpf_u64_t ringbuf_dropped;
-	bpf_u64_t map_update_failed;
-	bpf_u64_t lookup_missed;
-	bpf_u64_t total_ns;
-	bpf_u64_t max_ns;
+	bpf_u64_t attempted;        // PID 过滤后进入 openat 的调用数
+	bpf_u64_t completed;        // 成功关联入口/出口的调用数
+	bpf_u64_t submitted;        // 最终提交到 ringbuf 的明细数
+	bpf_u64_t failed;           // 内核返回负 errno 的调用数
+	bpf_u64_t filtered_pid;     // 在入口被 TGID 过滤的调用数
+	bpf_u64_t filtered_delay;   // 低于耗时阈值、未输出明细的调用数
+	bpf_u64_t ringbuf_dropped;  // ringbuf reserve 失败数
+	bpf_u64_t map_update_failed; // 入口上下文写入 tid_map 失败数
+	bpf_u64_t lookup_missed;    // 出口没有对应入口上下文的次数
+	bpf_u64_t path_read_failed;  // 用户 pathname 指针不可读的次数
+	bpf_u64_t path_truncated;    // pathname 超过事件固定缓冲区的次数
+	bpf_u64_t total_ns;         // 所有 completed 调用的总耗时
+	bpf_u64_t max_ns;           // 所有 completed 调用的最大耗时
 	bpf_s32_t max_pid;
 	bpf_s8_t  max_comm[TASK_COMM_LEN];
 };

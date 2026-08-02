@@ -64,6 +64,10 @@ static void print_stats(void)
 	struct TcpMonitor_stats s = {};
 	int key = 0;
 	int ncpus = libbpf_num_possible_cpus();
+	/*
+	 * 内核热点路径只写本 CPU 的统计以消除共享写竞争；退出时一次 lookup
+	 * 取回所有 possible CPU 的 value。stride 必须遵守内核 8 字节对齐规则。
+	 */
 	size_t stride = (sizeof(struct TcpMonitor_stats) + 7) & ~((size_t)7);
 	void *values;
 
@@ -91,6 +95,7 @@ static void print_stats(void)
 		s.ringbuf_dropped += v->ringbuf_dropped;
 		s.map_update_failed += v->map_update_failed;
 		s.untracked_events += v->untracked_events;
+		/* 四元组和 comm 必须跟随产生 hs_max_ns 的同一 CPU value。 */
 		if (v->hs_max_ns > s.hs_max_ns) {
 			s.hs_max_ns = v->hs_max_ns;
 			s.hs_max_sport = v->hs_max_sport;
@@ -204,8 +209,11 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 				e->retrans_cnt, tcp_state_str(e->state));
 			break;
 		case TCP_EV_CLOSE:
-			// 青色关闭事件，打印整条连接总重传数、关闭时TCP状态
-			LOG("%-10s | TGID=%-6u TID=%-6u %-16s %-25s → %-25s | R#%-3u %s LIFE=%" PRIu64 "ms\n",
+			/*
+			 * 探针位于 tcp_close 入口，此时 skc_state 还是调用前状态，故明确
+			 * 标记为 PRE，避免把 ESTABLISHED 等值误解成关闭后的最终状态。
+			 */
+			LOG("%-10s | TGID=%-6u TID=%-6u %-16s %-25s → %-25s | R#%-3u PRE=%s LIFE=%" PRIu64 "ms\n",
 				C_CYAN "CLOSE" C_RESET, e->tgid, e->tid, e->comm, src, dst,
 				e->retrans_cnt, tcp_state_str(e->state), e->latency_ns / 1000000);
 			break;

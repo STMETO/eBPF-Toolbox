@@ -6,8 +6,8 @@ struct Mutexlock_ctrl {
 	bpf_bool_t enable;
 	bpf_u64_t  min_delay_ns;
 	bpf_s32_t  target_pid;
-	bpf_u64_t  pid_ns_dev;
-	bpf_u64_t  pid_ns_ino;
+	bpf_u64_t  pid_ns_dev;     // bpf_get_ns_current_pid_tgid 使用的 nsfs 设备号
+	bpf_u64_t  pid_ns_ino;     // 保证过滤和输出使用启动工具时可见的 PID
 };
 
 /**
@@ -39,15 +39,15 @@ struct Mutexlock_event {
  * 统计慢路径次数、等待时间及 Map/ringbuf 健康指标；按 CPU 独立累计。
  */
 struct Mutexlock_stats {
-	bpf_u64_t attempted;
-	bpf_u64_t contention_count;
-	bpf_u64_t filtered_delay;
-	bpf_u64_t ringbuf_dropped;
-	bpf_u64_t map_update_failed;
-	bpf_u64_t lookup_missed;
-	bpf_u64_t wait_total_ns;
-	bpf_u64_t wait_max_ns;
-	bpf_u64_t max_lock_addr;
+	bpf_u64_t attempted;        // 进入 __mutex_lock_slowpath 的次数
+	bpf_u64_t contention_count; // 通过阈值且成功提交 ringbuf 的次数
+	bpf_u64_t filtered_delay;   // 低于最小等待阈值的次数
+	bpf_u64_t ringbuf_dropped;  // ringbuf reserve 失败次数
+	bpf_u64_t map_update_failed; // 入口上下文写入 LRU Map 失败次数
+	bpf_u64_t lookup_missed;    // kretprobe 未找到入口上下文的次数
+	bpf_u64_t wait_total_ns;    // 成功上报事件的等待总耗时
+	bpf_u64_t wait_max_ns;      // 成功上报事件的最大等待耗时
+	bpf_u64_t max_lock_addr;    // 最大等待对应的 struct mutex 地址
 	bpf_s32_t max_owner_pid, max_contender_pid;
 	bpf_s8_t  max_owner_name[TASK_COMM_LEN], max_contender_name[TASK_COMM_LEN];
 };

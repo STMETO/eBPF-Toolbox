@@ -26,6 +26,11 @@ static void print_stats(void)
 	struct ContextSwitch_stats stats = {};
 	int key = 0;
 	int ncpus = libbpf_num_possible_cpus();
+	/*
+	 * PERCPU_ARRAY lookup 会连续返回 possible CPU 的 value，每份 value 按
+	 * 8 字节对齐。计数/总耗时求和；最大值则连同对应进程字段整组复制，
+	 * 避免“最大耗时”和进程名来自不同 CPU。
+	 */
 	size_t stride = (sizeof(struct ContextSwitch_stats) + 7) & ~((size_t)7);
 	void *values;
 

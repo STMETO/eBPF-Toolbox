@@ -34,6 +34,11 @@ struct {
 	__uint(max_entries, 256 * 1024);
 } rb SEC(".maps");
 
+/*
+ * “___local” 是 libbpf CO-RE 的类型匹配约定：加载时会与目标内核中
+ * trace_event_raw_mm_vmscan_direct_reclaim_end_template 匹配，只重定位实际
+ * 使用的 nr_reclaimed 字段，不依赖 tracepoint context 其余字段的布局。
+ */
 struct trace_event_raw_mm_vmscan_direct_reclaim_end_template___local {
 	unsigned long nr_reclaimed;
 } __attribute__((preserve_access_index));
@@ -73,6 +78,11 @@ int trace_direct_reclaim_begin(void *ctx)
 	val.id = id;
 	val.ts = bpf_ktime_get_ns();
 	bpf_get_current_comm(val.name, sizeof(val.name));
+	/*
+	 * direct reclaim 期间任务可能睡眠并迁移 CPU，因此用 namespace pid_tgid
+	 * 做跨 CPU 关联，不能使用 PERCPU_ARRAY 临时槽。LRU 上限则避免异常缺失
+	 * end 事件时状态无限增长。
+	 */
 	if (bpf_map_update_elem(&start, &id, &val, BPF_ANY) && stats)
 		stats->map_update_failed++;
 	return 0;
@@ -105,6 +115,7 @@ int trace_direct_reclaim_end(void *ctx)
 		return 0;
 	}
 
+	/* 开关或过滤条件中途变化时仍必须删除 begin 留下的状态。 */
 	if (!ctrl || !ctrl->enable ||
 	    (ctrl->target_pid && ctrl->target_pid != tgid)) {
 		bpf_map_delete_elem(&start, &id);
@@ -125,6 +136,7 @@ int trace_direct_reclaim_end(void *ctx)
 		}
 	}
 
+	/* 摘要先聚合全部完成事件，阈值仅抑制高频短事件的明细输出。 */
 	if (ctrl->min_delay_ns && delay_ns < ctrl->min_delay_ns) {
 		if (stats)
 			stats->filtered_delay++;

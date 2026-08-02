@@ -14,7 +14,12 @@
 #define C_BOLD   "\033[1m"
 #define C_RESET  "\033[0m"
 
-/* 组合观测时，一个模块的一整行/面板应作为不可分割的输出块。 */
+/*
+ * stdio 只保证单次函数调用内部互斥，而一条事件通常由 LOG()、耗时着色和
+ * 换行三次调用组成。组合观测时用 FILE 锁包住整个输出块，防止不同模块
+ * 把内容插入同一行；flockfile() 对同一线程可递归加锁，LOG() 内部 fflush
+ * 不会造成死锁。
+ */
 static inline void log_output_lock(void) { flockfile(stdout); }
 static inline void log_output_unlock(void) { funlockfile(stdout); }
 

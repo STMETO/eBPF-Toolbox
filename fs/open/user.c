@@ -29,6 +29,10 @@ static struct open_bpf *g_skel = NULL;
 	struct Open_stats s = {};
 	int key = 0;
 	int ncpus = libbpf_num_possible_cpus();
+	/*
+	 * stats_map 是 PERCPU_ARRAY。libbpf 要求 lookup 缓冲区按每 CPU value
+	 * 向上 8 字节对齐，随后用户态再合并计数、总耗时和全局最大值。
+	 */
 	size_t stride = (sizeof(struct Open_stats) + 7) & ~((size_t)7);
 	void *values;
 
@@ -53,7 +57,10 @@ static struct open_bpf *g_skel = NULL;
 		s.ringbuf_dropped += v->ringbuf_dropped;
 		s.map_update_failed += v->map_update_failed;
 		s.lookup_missed += v->lookup_missed;
+		s.path_read_failed += v->path_read_failed;
+		s.path_truncated += v->path_truncated;
 		s.total_ns += v->total_ns;
+		/* 最大耗时与 PID/comm 同源复制，保持摘要字段的一致性。 */
 		if (v->max_ns > s.max_ns) {
 			s.max_ns = v->max_ns;
 			s.max_pid = v->max_pid;
@@ -75,9 +82,11 @@ static struct open_bpf *g_skel = NULL;
 		printf("  平均: %" PRIu64 " ns  最大: %" PRIu64 " ns (PID=%d %s)\n",
 		       s.total_ns / s.completed, s.max_ns, s.max_pid, s.max_comm);
 	printf("  过滤: PID=%" PRIu64 " 延迟=%" PRIu64
-	       "  丢弃: ringbuf=%" PRIu64 " map=%" PRIu64 " miss=%" PRIu64 "\n",
+	       "  健康: ringbuf_drop=%" PRIu64 " map_fail=%" PRIu64
+	       " lookup_miss=%" PRIu64 " path_fail=%" PRIu64 " path_trunc=%" PRIu64 "\n",
 	       s.filtered_pid, s.filtered_delay, s.ringbuf_dropped,
-	       s.map_update_failed, s.lookup_missed);
+	       s.map_update_failed, s.lookup_missed,
+	       s.path_read_failed, s.path_truncated);
 	 printf(C_CYAN C_BOLD "══════════════════════\n" C_RESET);
 	log_output_unlock();
  }

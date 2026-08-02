@@ -22,8 +22,8 @@ struct ContextSwitch_ctrl {
 	bpf_bool_t enable;         // 监控开关
 	bpf_u64_t  min_delay_ns;   // 最小延迟阈值(ns)，低于此值不上报
 	bpf_s32_t  target_pid;     // 目标 PID，0=监控全部
-	bpf_u64_t  pid_ns_dev;
-	bpf_u64_t  pid_ns_ino;
+	bpf_u64_t  pid_ns_dev;     // 用户态 PID namespace 的 nsfs st_dev
+	bpf_u64_t  pid_ns_ino;     // 用户态 PID namespace 的 nsfs st_ino
 };
 
 /* ── 输出事件结构体 ──────────────────────────────────────── */
@@ -48,10 +48,10 @@ struct ContextSwitch_event {
 struct ContextSwitch_stats {
 	bpf_u64_t wakeups;         // 记录的唤醒次数
 	bpf_u64_t count;           // 成功上报次数
-	bpf_u64_t filtered_delay;
-	bpf_u64_t ringbuf_dropped;
-	bpf_u64_t map_update_failed;
-	bpf_u64_t unmatched_switches;
+	bpf_u64_t filtered_delay;  // 低于 min_delay_ns、只聚合不上报的次数
+	bpf_u64_t ringbuf_dropped; // ringbuf reserve 失败的慢事件数
+	bpf_u64_t map_update_failed; // wakeup 上下文写入 LRU Map 失败数
+	bpf_u64_t unmatched_switches;// switch-in 时没有对应 wakeup 起点的次数
 	bpf_u64_t total_ns;        // 累计延迟(ns)
 	bpf_u64_t max_ns;          // 最大延迟(ns)
 	bpf_s32_t max_prev_pid;    // 最大延迟时的 prev PID

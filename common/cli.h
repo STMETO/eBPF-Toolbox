@@ -66,6 +66,11 @@ int app_setup_signal_handlers(void);
  * 返回：true=需要退出，false=继续运行
  */
 bool app_should_exit(void);
+
+/**
+ * 由普通工作线程请求全局退出。
+ * 与信号处理器使用的 sig_atomic_t 分离，内部通过 C11 原子变量同步。
+ */
 void app_request_exit(void);
 
 /**

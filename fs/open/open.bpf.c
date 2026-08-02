@@ -121,11 +121,26 @@ int openat_entry(struct trace_event_raw_sys_enter *ctx)
 	entry.tid = tid;
 	entry.dirfd = (bpf_s32_t)ctx->args[0];
 
-	/* 安全读取用户态字符串：openat 第二个参数 args[1] 是文件路径指针 */
-	bpf_probe_read_user_str(entry.path_name_, sizeof(entry.path_name_),
-				 (void *)ctx->args[1]);
+	/*
+	 * openat 第二个参数是用户指针，必须用 user helper 有界读取。返回值包含
+	 * 结尾 NUL；等于缓冲区大小说明可能被截断，负数说明指针读取失败。
+	 */
+	long path_len = bpf_probe_read_user_str(entry.path_name_, sizeof(entry.path_name_),
+					(void *)ctx->args[1]);
+	if (path_len < 0) {
+		if (stats)
+			stats->path_read_failed++;
+		__builtin_memcpy(entry.path_name_, "<read-error>", sizeof("<read-error>"));
+	} else if (path_len == sizeof(entry.path_name_)) {
+		if (stats)
+			stats->path_truncated++;
+	}
 
-	/* 存入 tid_map，出口阶段取出 */
+	/*
+	 * 用 namespace 可见 TID 而不是 TGID：同一进程的多个线程可以并发
+	 * openat，TGID 会导致入口上下文互相覆盖。只有当前 namespace 可见的
+	 * 任务才会走到这里，所以 TID 在该 Map 中唯一。
+	 */
 	if (bpf_map_update_elem(&tid_map, &tid, &entry, BPF_ANY) && stats)
 		stats->map_update_failed++;
 
@@ -149,7 +164,7 @@ int openat_exit(struct trace_event_raw_sys_exit *ctx)
 		return 0;
 	u32 tid = (u32)pid_tgid;
 
-	/* 从 tid_map 取出入口阶段暂存的路径和 PID */
+	/* 从 tid_map 取出入口阶段暂存的路径、flags 和开始时间。 */
 	struct entry_data *entry = bpf_map_lookup_elem(&tid_map, &tid);
 	if (!entry) {
 		struct Open_stats *stats = get_stats();
@@ -189,6 +204,10 @@ int openat_exit(struct trace_event_raw_sys_exit *ctx)
 		bpf_map_delete_elem(&tid_map, &tid);
 		return 0;
 	}
+	/*
+	 * 统计包含所有完成调用；阈值只控制明细是否进入 ringbuf。这样即使
+	 * 用户只查看长尾事件，退出摘要仍能给出完整次数、失败率与平均耗时。
+	 */
 	if (ctrl->min_delay_ns && latency_ns < ctrl->min_delay_ns) {
 		if (stats)
 			stats->filtered_delay++;

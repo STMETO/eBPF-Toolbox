@@ -15,7 +15,12 @@ struct wakeup_info {
 	bpf_s32_t wakeup_cpu;
 };
 
-/* 任务可能在 wakeup 后迁移 CPU，因此必须以 TID 关联，而不能使用 per-CPU 槽。 */
+/*
+ * 任务可能在 wakeup 后迁移 CPU，因此不能使用 per-CPU 临时槽。Map 以
+ * task_struct 地址关联同一个任务的 wakeup 与 switch-in；相比 namespace
+ * TID，它不会因不同 PID namespace 的数字重叠而冲突。进程退出探针负责
+ * 删除未消费项，避免 task_struct 地址复用命中旧时间戳。
+ */
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, 16384);
@@ -96,6 +101,19 @@ int BPF_PROG(trace_sched_wakeup_new, struct task_struct *task)
 	return record_wakeup(task);
 }
 
+SEC("tracepoint/sched/sched_process_exit")
+int trace_sched_process_exit(void *ctx)
+{
+	/* 标准 tracepoint 上下文中的 current 正是正在退出的任务。 */
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	bpf_u64_t task_key = (bpf_u64_t)task;
+
+	(void)ctx;
+	/* delete 对不存在的 key 是安全的，因此无需先 lookup 增加热点开销。 */
+	bpf_map_delete_elem(&wakeup_map, &task_key);
+	return 0;
+}
+
 SEC("tp_btf/sched_switch")
 int BPF_PROG(trace_sched_switch, bool preempt,
 	     struct task_struct *prev, struct task_struct *next)
@@ -121,6 +139,7 @@ int BPF_PROG(trace_sched_switch, bool preempt,
 		return 0;
 
 	next_key = (bpf_u64_t)next;
+	/* 只有被观测到 wakeup 的 runnable 任务才有可计算的排队起点。 */
 	info = bpf_map_lookup_elem(&wakeup_map, &next_key);
 	if (!info) {
 		if (stats)
@@ -131,6 +150,7 @@ int BPF_PROG(trace_sched_switch, bool preempt,
 	now = bpf_ktime_get_ns();
 	delay_ns = now - info->ts_ns;
 	wakeup_cpu = info->wakeup_cpu;
+	/* 先删除关联状态，后续阈值过滤或 ringbuf 满都不会留下旧记录。 */
 	bpf_map_delete_elem(&wakeup_map, &next_key);
 
 	if (ctrl->min_delay_ns && delay_ns < ctrl->min_delay_ns) {

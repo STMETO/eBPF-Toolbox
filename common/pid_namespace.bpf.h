@@ -1,8 +1,11 @@
 #ifndef COMMON_PID_NAMESPACE_BPF_H
 #define COMMON_PID_NAMESPACE_BPF_H
 
-/* 最深嵌套 32 层足以覆盖内核允许的 PID namespace 层级。 */
-#define APP_PIDNS_MAX_LEVEL 32
+/*
+ * Linux 的 MAX_PID_NS_LEVEL 为 32，level 从 0 开始编号，因此必须覆盖
+ * 0..32 共 33 个 upid。固定上界也让 verifier 能证明循环一定终止。
+ */
+#define APP_PIDNS_LEVEL_COUNT 33
 
 /*
  * 获取指定 PID namespace 中当前线程的 TGID/TID。
@@ -29,16 +32,17 @@ app_pid_nr_in_ns(struct pid *pid, bpf_u64_t ino)
 	if (!pid || !ino)
 		return 0;
 	level = BPF_CORE_READ(pid, level);
-	if (level >= APP_PIDNS_MAX_LEVEL)
+	if (level >= APP_PIDNS_LEVEL_COUNT)
 		return 0;
 
 #pragma unroll
-	for (int i = 0; i < APP_PIDNS_MAX_LEVEL; i++) {
+	for (int i = 0; i < APP_PIDNS_LEVEL_COUNT; i++) {
 		struct upid upid = {};
 		bpf_u32_t inum;
 
 		if (i > level)
 			break;
+		/* numbers[] 从初始 namespace 到最内层逐级保存可见 PID。 */
 		bpf_core_read(&upid, sizeof(upid), &pid->numbers[i]);
 		if (!upid.ns)
 			continue;
@@ -68,6 +72,7 @@ app_task_tgid_ns(struct task_struct *task, bpf_u64_t ino)
 
 	if (!task)
 		return 0;
+	/* TGID 是线程组 leader 的 PID，不能直接使用当前线程的 thread_pid。 */
 	leader = BPF_CORE_READ(task, group_leader);
 	if (!leader)
 		return 0;

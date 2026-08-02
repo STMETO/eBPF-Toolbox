@@ -107,6 +107,7 @@ $(VMLINUX_H): $(VMLINUX_SRC) | $(OUTPUT)
 define BUILD_MODULE
 BPF_SRC_$(1) := $(1)/$(notdir $(1)).bpf.c
 
+# -MMD 记录共享头依赖，修改事件 ABI 或公共 BPF helper 后自动重编该模块。
 $$(OUTPUT)/$(1).bpf.o: $$(BPF_SRC_$(1)) $(VMLINUX_H) $(BPFTOOL)
 	$(call msg,BPF,$(1))
 	$(Q)mkdir -p $$(dir $$@)
@@ -158,4 +159,5 @@ $(TARGET): $(MAIN_OBJ) $(CLI_OBJ) $(USER_LIB) $(LIBBPF_OBJ) $(BLAZESYM_LIB)
 .DELETE_ON_ERROR:
 .SECONDARY:
 
+# 首次构建时 .d 尚不存在，使用 -include；后续构建据此避免陈旧 skeleton/ABI。
 -include $(BPF_OBJS:%=%.d) $(USER_OBJS:%=%.d) $(MAIN_OBJ).d $(CLI_OBJ).d

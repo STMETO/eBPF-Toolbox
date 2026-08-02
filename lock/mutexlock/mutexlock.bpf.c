@@ -93,6 +93,11 @@ int BPF_KPROBE(mutex_slowpath_entry, struct mutex *lock)
 	data.contender_prio = BPF_CORE_READ((struct task_struct *)bpf_get_current_task(), prio);
 	bpf_get_current_comm(data.contender_name, sizeof(data.contender_name));
 
+	/*
+	 * mutex owner 是 task_struct 指针与 WAITERS/HANDOFF/PICKUP 三个低位标志
+	 * 的组合。这里记录的是进入慢路径瞬间的 owner 快照；等待期间 owner
+	 * 仍可能发生交接，因此它用于定位线索而不是完整持锁历史。
+	 */
 	owner = (unsigned long)BPF_CORE_READ(lock, owner.counter);
 	owner_task = (struct task_struct *)(owner & ~MUTEX_OWNER_FLAGS);
 	if (owner_task) {
@@ -138,6 +143,7 @@ int BPF_KRETPROBE(mutex_slowpath_exit)
 		return 0;
 	}
 
+	/* slowpath 返回意味着竞争者已经取得锁，区间即实际慢路径等待耗时。 */
 	wait_ns = bpf_ktime_get_ns() - data->enter_ts;
 	if (ctrl->min_delay_ns && wait_ns < ctrl->min_delay_ns) {
 		if (stats)

@@ -10,8 +10,8 @@ struct DrSnoop_ctrl {
     bpf_bool_t enable;
 	bpf_u64_t min_delay_ns;
 	bpf_s32_t target_pid;
-	bpf_u64_t pid_ns_dev;
-	bpf_u64_t pid_ns_ino;
+	bpf_u64_t pid_ns_dev;      // bpf_get_ns_current_pid_tgid 的 namespace 设备号
+	bpf_u64_t pid_ns_ino;      // bpf_get_ns_current_pid_tgid 的 namespace inode
 };
 
 /**
@@ -45,15 +45,15 @@ struct data_t {
 };
 
 struct DrSnoop_stats {
-	bpf_u64_t attempted;
-	bpf_u64_t completed;
-	bpf_u64_t filtered_delay;
-	bpf_u64_t ringbuf_dropped;
-	bpf_u64_t map_update_failed;
-	bpf_u64_t lookup_missed;
-	bpf_u64_t total_ns;
-	bpf_u64_t max_ns;
-	bpf_u64_t total_reclaimed;
+	bpf_u64_t attempted;        // direct reclaim begin 次数
+	bpf_u64_t completed;        // 成功关联 begin/end 的次数
+	bpf_u64_t filtered_delay;   // 低于阈值、未输出明细的次数
+	bpf_u64_t ringbuf_dropped;  // ringbuf reserve 失败次数
+	bpf_u64_t map_update_failed; // begin 上下文写入 LRU Map 失败次数
+	bpf_u64_t lookup_missed;    // end 未找到 begin 上下文的次数
+	bpf_u64_t total_ns;         // 所有 completed reclaim 的总阻塞时间
+	bpf_u64_t max_ns;           // 最大单次 reclaim 阻塞时间
+	bpf_u64_t total_reclaimed;  // 所有 completed 事件回收页数之和
 	bpf_s32_t max_pid;
 	bpf_s8_t max_comm[TASK_COMM_LEN];
 };

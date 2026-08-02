@@ -29,6 +29,10 @@ static void print_stats(void)
 	ncpus = libbpf_num_possible_cpus();
 	if (ncpus <= 0)
 		return;
+	/*
+	 * PERCPU_ARRAY 避免多个 CPU 在 reclaim 路径上竞争同一缓存行；这里按
+	 * 8 字节对齐读取每 CPU value，累计计数并选择携带完整上下文的最大值。
+	 */
 	stride = (sizeof(struct DrSnoop_stats) + 7) & ~((size_t)7);
 	values = calloc((size_t)ncpus, stride);
 	if (!values)
@@ -140,6 +144,10 @@ int dr_snoop_run(int poll_timeout_ms, bool enable,
 
 	log_output_lock();
 	log_banner("Direct Reclaim 延迟监控", enable);
+	if (target_pid)
+		LOG("过滤 PID=%d  阈值=%" PRIu64 " ns\n", target_pid, min_delay_ns);
+	else if (min_delay_ns)
+		LOG("ALL PID  阈值=%" PRIu64 " ns\n", min_delay_ns);
 	printf("%-8s %-16s %-11s %-18s %s\n", "TIME", "COMM", "PID", "RECLAIMED", "LATENCY");
 	log_output_unlock();
 	while (!app_should_exit()) {
@@ -148,8 +156,10 @@ int dr_snoop_run(int poll_timeout_ms, bool enable,
 			err = 0;
 			break;
 		}
-		if (err < 0)
+		if (err < 0) {
+			fprintf(stderr, "轮询 direct reclaim 事件失败: %s\n", strerror(-err));
 			break;
+		}
 	}
 	print_stats();
 
