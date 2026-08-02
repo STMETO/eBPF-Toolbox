@@ -16,9 +16,14 @@ My_eBPF_Poj/
 │   └── slab_rate/ dr_snoop/
 ├── sched/                       # 调度延迟监测
 │   ├── context_switch/ preempt/
-├── lock/                        # 同步/IPC 监测
-│   ├── syscall/ msgqueue/
+├── lock/                        # 内核锁竞争监测
 │   └── mutexlock/
+├── ipc/                         # 进程间通信监测
+│   └── msgqueue/
+├── syscall/                     # 系统调用延迟监测
+│   ├── syscall.bpf.c
+│   ├── syscall.h
+│   └── user.c
 ├── net/                         # 网络监测
 │   ├── tcp_monitor/
 │   └── udp_monitor/
@@ -77,7 +82,9 @@ openat 入口到出口，`tcp_monitor` 为主动建连/重传/关闭生命周期
 | 类别 | 命令 |
 |------|------|
 | 调度延迟 | `context` `preempt` |
-| 同步/IPC | `syscall` `msgqueue` `mutexlock` |
+| 内核锁 | `mutexlock` |
+| IPC | `msgqueue` |
+| 系统调用 | `syscall` |
 | 文件系统 | `fs_open` `fs_read` `fs_write` `block_io` |
 | 内存 | `proc_stat` `dr_snoop` `oom_killer` `slab_rate` |
 | 网络 | `tcp_monitor` `udp_monitor` |

@@ -9,7 +9,7 @@
 #include "common/types.h"
 #include "common/logger.h"
 #include "syscall.h"
-#include "lock/syscall/skel.h"
+#include "syscall/skel.h"
 
 // 全局BPF骨架指针，信号退出函数需要读取内核统计Map
 static struct syscall_bpf *g_skel = NULL;

@@ -9,7 +9,7 @@
 #include "common/types.h"
 #include "common/logger.h"
 #include "msgqueue.h"
-#include "lock/msgqueue/skel.h"
+#include "ipc/msgqueue/skel.h"
 
 // 全局BPF骨架指针，信号处理函数需要读取内核统计Map
 static struct msgqueue_bpf *g_skel = NULL;

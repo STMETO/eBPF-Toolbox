@@ -12,10 +12,10 @@ enum app_mode {
 	APP_MODE_UNSET = 0,    	// 初始状态：未选择任何模式（必须用户指定）
 	APP_MODE_CONTEXT_SWITCH, // 模式1：监控进程上下文切换
     APP_MODE_PREEMPT,         // 抢占延迟
-	APP_MODE_SYSCALL,      	// 模式2：监控系统调用
+	APP_MODE_SYSCALL,      	// 系统调用延迟监控
 	APP_MODE_TCP_MONITOR,  	// 模式3：监控 TCP 建连延迟
-	APP_MODE_MSGQUEUE,     	// 模式4：监控消息队列延迟
-	APP_MODE_MUTEXLOCK,    	// 模式5：监控互斥锁延迟
+	APP_MODE_MSGQUEUE,     	// IPC：消息队列收发延迟
+	APP_MODE_MUTEXLOCK,    	// 锁：内核 mutex 慢路径等待
 
 	// 文件系统监控 (5)
 	APP_MODE_FS_OPEN,          // 模式8：监控 open 系统调用
