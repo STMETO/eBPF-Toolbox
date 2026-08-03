@@ -1,3 +1,14 @@
+// 请求下发给设备驱动开始 → 硬件 IO 执行完成、驱动上报完成的耗时
+/*
+应用程序发起读写（read/write）
+文件系统、page cache 处理，生成 IO 请求
+block_rq_insert：IO 请求进入内核 IO 调度队列排队
+*	block_rq_issue：内核把这条 IO 正式发给磁盘驱动（你的程序开始计时）
+*	驱动指令下发给磁盘硬件，磁盘真正读写数据
+*	磁盘完成操作，发中断通知 CPU
+*	block_rq_complete：内核收到磁盘完成信号（你的程序停止计时）
+*/
+
 #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
@@ -201,14 +212,14 @@ int trace_complete(struct trace_event_raw_block_rq_completion *ctx)
 	}
 
 	// 填充IO事件所有字段
-	e->type = BLOCK_IO_EV_COMPLETE;  // 事件类型：IO完成
+	e->type = BLOCK_IO_EV_COMPLETE;   // 事件类型：IO完成
 	e->ts_ns = now;                   // IO完成时间戳
 	e->latency_ns = lat;              // 整套块IO全链路耗时(ns)
 	e->pid = v->pid;                  // IO发起进程PID
 	e->dev = k.dev;                   // 块设备号
 	e->sector = k.sector;             // IO起始扇区
 	e->nr_sectors = v->nr_sectors;    // 占用扇区数
-	e->rwbs = enc(v->rwbs);           // 转换读写类型数字编码
+	e->rwbs = enc(v->rwbs);        // 转换读写类型数字编码
 	e->bytes = v->bytes;              // IO总字节
 	// 拷贝进程名到事件
 	__builtin_memcpy(e->comm, v->comm, TASK_COMM_LEN);

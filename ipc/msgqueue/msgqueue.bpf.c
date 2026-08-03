@@ -1,289 +1,599 @@
 #include <vmlinux.h>
+#include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+
 #include "msgqueue.h"
+#include "common/pid_namespace.bpf.h"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-const int ctrl_key = 0;
+#define MQ_MAX_INFLIGHT_CALLS 8192
+#define MQ_MAX_TRACKED_MESSAGES 16384
 
-/**
- * @struct mq_start
- * 每CPU临时缓存结构体，配合kprobe + kretprobe成对捕获mq收发系统调用
- * kprobe入口保存现场，kretprobe读取计算耗时、组装上报事件
+/*
+ * 发送调用的线程上下文。key 使用全局 pid_tgid，而不是 CPU：
+ * mq_timedsend() 在队列满时会睡眠，任务醒来后可能已经迁移到另一 CPU，
+ * PERCPU_ARRAY 无法保证入口和后续探针读到同一槽位。
  */
-struct mq_start { 
-	bpf_u64_t start_ts; 	// 系统调用进入时刻内核单调纳秒时间戳，用于计算调用延迟
-	bpf_s32_t mqdes; 		// 消息队列句柄，区分不同mq实例
-	bpf_u64_t msg_len; 		// 本次发送/接收的消息数据长度
-	bpf_u32_t msg_prio; 	// 消息优先级
-	bpf_u32_t is_send; 		// 标记类型：预留区分发送/接收（当前代码未实际使用该字段判断）
+struct mq_send_ctx {
+	bpf_u64_t msg_key;
+	bpf_u64_t msg_len;
+	bpf_s32_t sender_pid;
+	bpf_s32_t mqdes;
+	bpf_u32_t msg_prio;
+	bpf_s8_t sender_comm[TASK_COMM_LEN];
+};
+
+/* 接收调用上下文，用于给接收路径交付的消息补充实际接收者信息。 */
+struct mq_recv_ctx {
+	bpf_s32_t receiver_pid;
+	bpf_s32_t mqdes;
+	bpf_s8_t receiver_comm[TASK_COMM_LEN];
 };
 
 /*
- * start_map：每CPU独立临时缓存MAP
- * 类型：BPF_MAP_TYPE_PERCPU_ARRAY 每CPU拥有独立副本，天然无多核并发竞争、无需锁
- * max_entries=1：单CPU同一时刻只会执行一条mq send/recv调用，仅需一条缓存
- * key：固定int 0
- * value：mq_start 存储本次mq操作的起点上下文
- * 流程：kprobe写入缓存记录现场 → kretprobe读取使用后清空start_ts防止脏数据
+ * load_msg() 已创建内核消息对象、但对象尚未确认入队时的元数据。
+ * 队列满时发送线程可以长时间睡眠，因此这里也必须按消息对象而非 CPU
+ * 保存。msg_insert() 成功后，元数据会被移入 queued_messages。
  */
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY); 
-	__uint(max_entries, 1);
-	__type(key, int); 
-	__type(value, struct mq_start);
-} start_map SEC(".maps");
+struct mq_pending_msg {
+	bpf_u64_t msg_len;
+	bpf_s32_t sender_pid;
+	bpf_s32_t mqdes;
+	bpf_u32_t msg_prio;
+	bpf_s8_t sender_comm[TASK_COMM_LEN];
+};
+
+/* 一条已经成功进入 mqueue 红黑树、正在等待接收者取出的消息。 */
+struct mq_queued_msg {
+	bpf_u64_t enqueue_ns;
+	bpf_u64_t msg_len;
+	bpf_s32_t sender_pid;
+	bpf_s32_t mqdes;
+	bpf_u32_t msg_prio;
+	bpf_s8_t sender_comm[TASK_COMM_LEN];
+};
 
 struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY); 
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MQ_MAX_INFLIGHT_CALLS);
+	__type(key, bpf_u64_t);       /* 全局 pid_tgid，唯一标识线程 */
+	__type(value, struct mq_send_ctx);
+} active_sends SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MQ_MAX_INFLIGHT_CALLS);
+	__type(key, bpf_u64_t);       /* 全局 pid_tgid，唯一标识线程 */
+	__type(value, struct mq_recv_ctx);
+} active_receives SEC(".maps");
+
+/*
+ * LRU_HASH 给异常退出或极端高并发留下有界兜底，避免关联项无限增长。
+ * key 是 struct msg_msg * 转成的无符号值；同一对象会贯穿装载、入队和
+ * 出队路径，因此比消息内容哈希更准确，也不存在相同消息内容碰撞。
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, MQ_MAX_TRACKED_MESSAGES);
+	__type(key, bpf_u64_t);       /* struct msg_msg * */
+	__type(value, struct mq_pending_msg);
+} pending_messages SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, MQ_MAX_TRACKED_MESSAGES);
+	__type(key, bpf_u64_t);       /* struct msg_msg * */
+	__type(value, struct mq_queued_msg);
+} queued_messages SEC(".maps");
+
+/*
+ * 发送端已确认走直接交付、但接收端尚未开始复制消息时的短生命周期记录。
+ * 单独保留它可以让接收端补全真实 receiver_pid，而不是只在发送返回时
+ * 上报一个接收者未知的 DIRECT 事件。
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, MQ_MAX_TRACKED_MESSAGES);
+	__type(key, bpf_u64_t);       /* struct msg_msg * */
+	__type(value, struct mq_pending_msg);
+} direct_messages SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
-	__type(key, int); 
+	__type(key, int);
 	__type(value, struct Msgqueue_ctrl);
 } ctrl_map SEC(".maps");
 
 /*
- * stats_map：全局消息队列收发统计汇总MAP
- * 类型：全局ARRAY，单条统计记录永久累加
- * 每次合法mq收发事件都会更新计数、总耗时、最大耗时
- * 程序退出时用户态读取此map，打印收发汇总报表
+ * 统计 Map 是全局 ARRAY。所有并发累加均使用 BPF 原子指令，最大值使用
+ * 有界 CAS 重试，避免原实现直接 ++ 在多 CPU 下丢计数。
  */
 struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY); 
+	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
-	__type(key, int); 
+	__type(key, int);
 	__type(value, struct Msgqueue_stats);
 } stats_map SEC(".maps");
 
 struct {
-	__uint(type, BPF_MAP_TYPE_RINGBUF); 
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 256 * 1024);
 } rb SEC(".maps");
 
-static inline struct Msgqueue_ctrl *get_ctrl(void)
-{ 
-	return bpf_map_lookup_elem(&ctrl_map, &ctrl_key); 
-}
-
-static inline bool pid_skip(struct Msgqueue_ctrl *c, bpf_s32_t pid)
-{ 
-	return !c || !c->enable || (c->target_pid != 0 && pid != c->target_pid); 
-}
-
-/**
- * @brief 消息队列收发事件统一处理公共函数
- * 发送/接收的kretprobe复用此逻辑，完成过滤、事件封装推送、全局统计更新
- * @param v 当前CPU缓存的mq调用现场结构体m_qstart，存储入口记录的时间、队列句柄、消息信息
- * @param pid 当前操作消息队列的进程PID(TGID)
- * @param type 事件类型 MQ_EV_SEND(发送)/MQ_EV_RECV(接收)
- */
-static void submit(struct mq_start *v, bpf_s32_t pid, bpf_u32_t type)
+static __always_inline struct Msgqueue_ctrl *get_ctrl(void)
 {
 	int key = 0;
-	struct Msgqueue_ctrl *c = get_ctrl();
-	// 获取系统调用返回时的内核单调时间戳（纳秒）
-	u64 now = bpf_ktime_get_ns();
-	// 计算mq_timedsend/mq_timedreceive完整系统调用耗时：返回时间 - 入口记录的起始时间
-	u64 delay = now - v->start_ts;
 
-	// 过滤规则1：监控关闭 / 当前进程不匹配目标PID，直接丢弃本条事件
-	if (pid_skip(c, pid))
-		return;
-	// 过滤规则2：配置了最小延迟阈值，且本次调用耗时低于阈值，丢弃不推送
-	if (c->min_delay_ns && delay < c->min_delay_ns)
-		return;
+	return bpf_map_lookup_elem(&ctrl_map, &key);
+}
 
-	// 从ringbuf预分配一块内存，用于封装事件下发给用户态
-	struct Msgqueue_event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return;
+static __always_inline struct Msgqueue_stats *get_stats(void)
+{
+	int key = 0;
 
-	// 填充事件基础字段
-	e->type = type;               // 标记是发送还是接收事件
-	e->ts_ns = now;               // 事件时间戳：系统调用返回时刻
-	e->delay_ns = delay;          // 本次mq系统调用总耗时
-	e->pid = pid;                 // 操作进程PID
-	e->mqdes = v->mqdes;          // 消息队列文件描述符
-	e->msg_len = v->msg_len;      // 消息长度
-	e->msg_prio = v->msg_prio;    // 消息优先级
-	// 读取当前进程名称存入事件
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+	return bpf_map_lookup_elem(&stats_map, &key);
+}
 
-	// 将完整事件提交到环形缓冲区，用户态libbpf阻塞读取解析
-	bpf_ringbuf_submit(e, 0);
+/* 当前进程在工具所在 PID namespace 中可见的 TGID。 */
+static __always_inline bpf_s32_t current_tgid(const struct Msgqueue_ctrl *ctrl)
+{
+	bpf_u64_t pid_tgid;
 
-	/* 更新全局收发统计指标，持久化到stats_map数组map */
-	struct Msgqueue_stats *st = bpf_map_lookup_elem(&stats_map, &key);
-	// 首次运行时stats_map无数据，初始化全零统计结构体写入map
-	if (!st) {
-		struct Msgqueue_stats z = {};
-		bpf_map_update_elem(&stats_map, &key, &z, BPF_ANY);
-		// 重新查询，保证指针有效
-		st = bpf_map_lookup_elem(&stats_map, &key);
+	pid_tgid = app_current_pid_tgid_ns(ctrl->pidns_dev, ctrl->pidns_ino);
+	return (bpf_s32_t)(pid_tgid >> 32);
+}
+
+/* Linux ERR_PTR 的错误值位于无符号地址空间最后 4095 个值。 */
+static __always_inline bool valid_msg_ptr(const struct msg_msg *msg)
+{
+	bpf_u64_t addr = (bpf_u64_t)msg;
+
+	return addr != 0 && addr < (bpf_u64_t)-4095;
+}
+
+static __always_inline void stats_add(bpf_u64_t *value, bpf_u64_t delta)
+{
+	__sync_fetch_and_add(value, delta);
+}
+
+/*
+ * CAS 可能因另一 CPU 同时更新而失败；固定十六次重试让 verifier 能证明
+ * 循环有界。若竞争者已经写入更大值，则无需继续更新。
+ */
+static __always_inline void stats_update_max(bpf_u64_t *max_value,
+					      bpf_u64_t candidate)
+{
+#pragma unroll
+	for (int i = 0; i < 16; i++) {
+		bpf_u64_t old = *max_value;
+
+		if (candidate <= old)
+			break;
+		if (__sync_val_compare_and_swap(max_value, old, candidate) == old)
+			break;
 	}
-	// 统计指针有效，区分发送/接收分别累加指标
-	if (st) {
-		if (type == MQ_EV_SEND) {
-			st->send_count++;                // 发送总次数+1
-			st->send_total_ns += delay;      // 累加所有发送调用总耗时
-			if (delay > st->send_max_ns)     // 刷新单次最大发送延迟
-				st->send_max_ns = delay;
-		} else {
-			st->recv_count++;                // 接收总次数+1
-			st->recv_total_ns += delay;      // 累加所有接收调用总耗时
-			if (delay > st->recv_max_ns)     // 刷新单次最大接收延迟
-				st->recv_max_ns = delay;
+}
+
+static __always_inline bool pid_matches(const struct Msgqueue_ctrl *ctrl,
+					 bpf_s32_t sender_pid,
+					 bpf_s32_t receiver_pid)
+{
+	return ctrl->target_pid == 0 || ctrl->target_pid == sender_pid ||
+	       ctrl->target_pid == receiver_pid;
+}
+
+/* 填充并提交一条已排队消息的驻留事件。 */
+static __always_inline void submit_queued(const struct mq_queued_msg *queued,
+					  const struct mq_recv_ctx *receiver)
+{
+	struct Msgqueue_stats *stats;
+	struct Msgqueue_event *event;
+	struct Msgqueue_ctrl *ctrl;
+	bpf_u64_t now;
+	bpf_u64_t residence_ns;
+
+	ctrl = get_ctrl();
+	if (!ctrl || !ctrl->enable)
+		return;
+	if (!pid_matches(ctrl, queued->sender_pid, receiver->receiver_pid))
+		return;
+
+	now = bpf_ktime_get_ns();
+	residence_ns = now - queued->enqueue_ns;
+
+	/* 汇总统计覆盖所有 PID 匹配样本；明细事件才受阈值控制。 */
+	stats = get_stats();
+	if (stats) {
+		stats_add(&stats->queued_count, 1);
+		stats_add(&stats->queued_total_ns, residence_ns);
+		stats_update_max(&stats->queued_max_ns, residence_ns);
+	}
+
+	if (ctrl->min_delay_ns && residence_ns < ctrl->min_delay_ns)
+		return;
+
+	event = bpf_ringbuf_reserve(&rb, sizeof(*event), 0);
+	if (!event) {
+		if (stats)
+			stats_add(&stats->ringbuf_drop_count, 1);
+		return;
+	}
+
+	event->ts_ns = now;
+	event->residence_ns = residence_ns;
+	event->msg_len = queued->msg_len;
+	event->sender_pid = queued->sender_pid;
+	event->receiver_pid = receiver->receiver_pid;
+	event->send_mqdes = queued->mqdes;
+	event->recv_mqdes = receiver->mqdes;
+	event->msg_prio = queued->msg_prio;
+	event->delivery_type = MQ_DELIVERY_QUEUED;
+	__builtin_memcpy(event->sender_comm, queued->sender_comm, TASK_COMM_LEN);
+	__builtin_memcpy(event->receiver_comm, receiver->receiver_comm,
+			 TASK_COMM_LEN);
+	bpf_ringbuf_submit(event, 0);
+}
+
+/*
+ * 当发送时已经有接收线程等待，Linux 会绕过队列直接把消息指针交给
+ * 接收者。此时不存在 msg_insert/msg_get 配对，驻留时间按定义记录为 0。
+ */
+static __always_inline void submit_direct(const struct mq_pending_msg *pending,
+					  const struct mq_recv_ctx *receiver)
+{
+	struct Msgqueue_stats *stats;
+	struct Msgqueue_event *event;
+	struct Msgqueue_ctrl *ctrl;
+
+	ctrl = get_ctrl();
+	if (!ctrl || !ctrl->enable ||
+	    !pid_matches(ctrl, pending->sender_pid, receiver->receiver_pid))
+		return;
+
+	stats = get_stats();
+	if (stats)
+		stats_add(&stats->direct_count, 1);
+
+	/* residence_ns=0，配置任何正阈值时 DIRECT 明细自然被过滤。 */
+	if (ctrl->min_delay_ns)
+		return;
+
+	event = bpf_ringbuf_reserve(&rb, sizeof(*event), 0);
+	if (!event) {
+		if (stats)
+			stats_add(&stats->ringbuf_drop_count, 1);
+		return;
+	}
+
+	event->ts_ns = bpf_ktime_get_ns();
+	event->residence_ns = 0;
+	event->msg_len = pending->msg_len;
+	event->sender_pid = pending->sender_pid;
+	event->receiver_pid = receiver->receiver_pid;
+	event->send_mqdes = pending->mqdes;
+	event->recv_mqdes = receiver->mqdes;
+	event->msg_prio = pending->msg_prio;
+	event->delivery_type = MQ_DELIVERY_DIRECT;
+	__builtin_memcpy(event->sender_comm, pending->sender_comm, TASK_COMM_LEN);
+	__builtin_memcpy(event->receiver_comm, receiver->receiver_comm,
+			 TASK_COMM_LEN);
+	bpf_ringbuf_submit(event, 0);
+}
+
+/*
+ * do_mq_timedsend 入口只记录调用元数据。真正的 struct msg_msg * 要等
+ * load_msg() 返回后才能取得，所以发送上下文先以线程 pid_tgid 暂存。
+ */
+SEC("fentry/do_mq_timedsend")
+int BPF_PROG(mq_send_enter, mqd_t mqdes, const char *u_msg_ptr,
+	     size_t msg_len, unsigned int msg_prio, struct timespec64 *ts)
+{
+	struct mq_send_ctx send = {};
+	struct Msgqueue_ctrl *ctrl;
+	bpf_u64_t pid_tgid;
+
+	(void)u_msg_ptr;
+	(void)ts;
+	ctrl = get_ctrl();
+	if (!ctrl || !ctrl->enable)
+		return 0;
+
+	pid_tgid = bpf_get_current_pid_tgid();
+	send.sender_pid = current_tgid(ctrl);
+	if (!send.sender_pid)
+		return 0;
+	send.mqdes = (bpf_s32_t)mqdes;
+	send.msg_len = msg_len;
+	send.msg_prio = msg_prio;
+	bpf_get_current_comm(send.sender_comm, sizeof(send.sender_comm));
+	if (bpf_map_update_elem(&active_sends, &pid_tgid, &send, BPF_ANY)) {
+		struct Msgqueue_stats *stats = get_stats();
+
+		if (stats)
+			stats_add(&stats->tracking_drop_count, 1);
+	}
+	return 0;
+}
+
+/*
+ * load_msg() 完成用户数据到内核 struct msg_msg 的复制。只处理当前正处于
+ * POSIX mq_timedsend 的线程，避免把 System V 消息队列的 load_msg 调用
+ * 混入本模块。
+ */
+SEC("fexit/load_msg")
+int BPF_PROG(mq_load_msg_exit, const void *src, size_t len,
+	     struct msg_msg *ret)
+{
+	struct mq_pending_msg pending = {};
+	struct mq_send_ctx *send;
+	bpf_u64_t pid_tgid;
+	bpf_u64_t msg_key;
+
+	(void)src;
+	(void)len;
+	if (!valid_msg_ptr(ret))
+		return 0;
+
+	pid_tgid = bpf_get_current_pid_tgid();
+	send = bpf_map_lookup_elem(&active_sends, &pid_tgid);
+	if (!send)
+		return 0;
+
+	msg_key = (bpf_u64_t)ret;
+	pending.msg_len = send->msg_len;
+	pending.sender_pid = send->sender_pid;
+	pending.mqdes = send->mqdes;
+	pending.msg_prio = send->msg_prio;
+	__builtin_memcpy(pending.sender_comm, send->sender_comm, TASK_COMM_LEN);
+
+	if (bpf_map_update_elem(&pending_messages, &msg_key, &pending, BPF_ANY)) {
+		struct Msgqueue_stats *stats = get_stats();
+
+		if (stats)
+			stats_add(&stats->tracking_drop_count, 1);
+		return 0;
+	}
+
+	/* 保存对象 key，供 do_mq_timedsend 返回时识别直接交付或失败路径。 */
+	send->msg_key = msg_key;
+	return 0;
+}
+
+/*
+ * msg_insert 返回 0 的时刻就是消息成功进入队列的时刻。该函数既覆盖
+ * 普通发送，也覆盖“队列原来已满，接收一条后把阻塞发送者消息补入队列”
+ * 的 pipelined_receive 路径；后者当前线程是接收者，因此必须从以消息
+ * 对象为 key 的 pending_messages 取回真正发送者，而不能使用 current。
+ */
+SEC("fexit/msg_insert")
+int BPF_PROG(mq_msg_insert_exit, struct msg_msg *msg,
+	     struct mqueue_inode_info *info, int ret)
+{
+	struct mq_pending_msg *pending;
+	struct mq_queued_msg queued = {};
+	bpf_u64_t msg_key;
+
+	(void)info;
+	if (ret != 0 || !msg)
+		return 0;
+
+	msg_key = (bpf_u64_t)msg;
+	pending = bpf_map_lookup_elem(&pending_messages, &msg_key);
+	if (!pending)
+		return 0;
+
+	queued.enqueue_ns = bpf_ktime_get_ns();
+	queued.msg_len = pending->msg_len;
+	queued.sender_pid = pending->sender_pid;
+	queued.mqdes = pending->mqdes;
+	queued.msg_prio = pending->msg_prio;
+	__builtin_memcpy(queued.sender_comm, pending->sender_comm, TASK_COMM_LEN);
+
+	if (bpf_map_update_elem(&queued_messages, &msg_key, &queued, BPF_ANY)) {
+		struct Msgqueue_stats *stats = get_stats();
+
+		if (stats)
+			stats_add(&stats->tracking_drop_count, 1);
+	}
+
+	/* 成功或失败都删除 pending，防止 send 返回时误判为 DIRECT。 */
+	bpf_map_delete_elem(&pending_messages, &msg_key);
+	return 0;
+}
+
+SEC("fentry/do_mq_timedreceive")
+int BPF_PROG(mq_recv_enter, mqd_t mqdes, char *u_msg_ptr,
+	     size_t msg_len, unsigned int *u_msg_prio, struct timespec64 *ts)
+{
+	struct mq_recv_ctx receiver = {};
+	struct Msgqueue_ctrl *ctrl;
+	bpf_u64_t pid_tgid;
+
+	(void)u_msg_ptr;
+	(void)msg_len;
+	(void)u_msg_prio;
+	(void)ts;
+	ctrl = get_ctrl();
+	if (!ctrl || !ctrl->enable)
+		return 0;
+
+	pid_tgid = bpf_get_current_pid_tgid();
+	receiver.receiver_pid = current_tgid(ctrl);
+	if (!receiver.receiver_pid)
+		return 0;
+	receiver.mqdes = (bpf_s32_t)mqdes;
+	bpf_get_current_comm(receiver.receiver_comm, sizeof(receiver.receiver_comm));
+	if (bpf_map_update_elem(&active_receives, &pid_tgid, &receiver, BPF_ANY)) {
+		struct Msgqueue_stats *stats = get_stats();
+
+		if (stats)
+			stats_add(&stats->tracking_drop_count, 1);
+	}
+	return 0;
+}
+
+/*
+ * 统一处理接收端观察到的消息对象。
+ *
+ * queued_messages 命中表示消息真正排过队；direct_messages 命中表示发送
+ * 返回先于接收端；pending_messages 命中表示接收端跑得更快、发送 fexit
+ * 尚未来得及把记录移入 direct_messages。三个分支共同解决直接交付路径
+ * 中发送/接收线程在不同 CPU 上并发执行的竞态。
+ */
+static __always_inline void consume_message(struct msg_msg *msg,
+					     bool count_unmatched)
+{
+	struct mq_queued_msg *queued;
+	struct mq_pending_msg *direct;
+	struct mq_recv_ctx *receiver;
+	struct mq_queued_msg queued_copy;
+	struct mq_pending_msg direct_copy;
+	bpf_u64_t pid_tgid;
+	bpf_u64_t msg_key;
+
+	if (!msg)
+		return;
+
+	msg_key = (bpf_u64_t)msg;
+	queued = bpf_map_lookup_elem(&queued_messages, &msg_key);
+	pid_tgid = bpf_get_current_pid_tgid();
+	receiver = bpf_map_lookup_elem(&active_receives, &pid_tgid);
+
+	if (queued) {
+		/* Map value 在删除后失效，因此先复制到 BPF 栈上。 */
+		__builtin_memcpy(&queued_copy, queued, sizeof(queued_copy));
+		bpf_map_delete_elem(&queued_messages, &msg_key);
+		if (receiver)
+			submit_queued(&queued_copy, receiver);
+		return;
+	}
+
+	/* 发送 fexit 已经把 DIRECT 元数据从 pending 移到 direct。 */
+	direct = bpf_map_lookup_elem(&direct_messages, &msg_key);
+	if (direct) {
+		__builtin_memcpy(&direct_copy, direct, sizeof(direct_copy));
+		bpf_map_delete_elem(&direct_messages, &msg_key);
+		if (receiver)
+			submit_direct(&direct_copy, receiver);
+		return;
+	}
+
+	/* 接收端可能抢在发送 fexit 前运行，此时 DIRECT 元数据仍在 pending。 */
+	direct = bpf_map_lookup_elem(&pending_messages, &msg_key);
+	if (direct && receiver) {
+		__builtin_memcpy(&direct_copy, direct, sizeof(direct_copy));
+		bpf_map_delete_elem(&pending_messages, &msg_key);
+		submit_direct(&direct_copy, receiver);
+		return;
+	}
+
+	/*
+	 * store_msg 只会对真实接收调用执行，因此可以统计未关联消息。free_msg
+	 * 还用于队列销毁和发送失败，不能把那些路径计为接收缺失。
+	 */
+	if (receiver && count_unmatched) {
+		struct Msgqueue_stats *stats = get_stats();
+		struct Msgqueue_ctrl *ctrl = get_ctrl();
+
+		if (stats && ctrl && ctrl->enable &&
+		    (!ctrl->target_pid || ctrl->target_pid == receiver->receiver_pid))
+			stats_add(&stats->unmatched_count, 1);
+	}
+	return;
+}
+
+/*
+ * msg_get() 在部分内核中被编译器内联，虽然 BTF/kallsyms 仍有同名实体，
+ * 却无法稳定建立 trampoline 或 kretprobe。store_msg() 是接收路径中紧随
+ * 取出消息之后、开始复制到用户缓冲区之前的稳定边界；以其入口作为
+ * “消息交付给接收者”的结束时刻，不包含用户缓冲区复制耗时。
+ */
+SEC("fentry/store_msg")
+int BPF_PROG(mq_store_msg_enter, void *dest, struct msg_msg *msg, size_t len)
+{
+	(void)dest;
+	(void)len;
+	consume_message(msg, true);
+	return 0;
+}
+
+/*
+ * 若优先级写回用户地址失败，内核会因短路判断跳过 store_msg()，但仍会
+ * free_msg()。此探针作为兜底，同时负责清理队列销毁时残留的关联记录。
+ * 正常路径已在 store_msg 删除记录，因此这里不会重复上报。
+ */
+SEC("fentry/free_msg")
+int BPF_PROG(mq_free_msg_enter, struct msg_msg *msg)
+{
+	consume_message(msg, false);
+	return 0;
+}
+
+/*
+ * send 返回时 pending 仍存在且 ret==0，说明消息没有经过 msg_insert，
+ * 即被直接交给了已经等待的接收者；失败返回则只清理关联状态。
+ */
+SEC("fexit/do_mq_timedsend")
+int BPF_PROG(mq_send_exit, mqd_t mqdes, const char *u_msg_ptr,
+	     size_t msg_len, unsigned int msg_prio, struct timespec64 *ts,
+	     int ret)
+{
+	struct mq_pending_msg *pending;
+	struct mq_send_ctx *send;
+	struct mq_pending_msg pending_copy;
+	bpf_u64_t pid_tgid;
+
+	(void)mqdes;
+	(void)u_msg_ptr;
+	(void)msg_len;
+	(void)msg_prio;
+	(void)ts;
+	pid_tgid = bpf_get_current_pid_tgid();
+	send = bpf_map_lookup_elem(&active_sends, &pid_tgid);
+	if (!send)
+		return 0;
+
+	if (send->msg_key) {
+		pending = bpf_map_lookup_elem(&pending_messages, &send->msg_key);
+		if (pending) {
+			__builtin_memcpy(&pending_copy, pending, sizeof(pending_copy));
+			if (ret == 0) {
+				/*
+				 * 接收者尚未消费 pending 时，把它转移到 direct Map。
+				 * 若接收者更早消费，pending 已不存在，不会重复上报。
+				 */
+				if (bpf_map_update_elem(&direct_messages, &send->msg_key,
+							&pending_copy, BPF_ANY)) {
+					struct Msgqueue_stats *stats = get_stats();
+
+					if (stats)
+						stats_add(&stats->tracking_drop_count, 1);
+				}
+			}
+			bpf_map_delete_elem(&pending_messages, &send->msg_key);
 		}
 	}
-}
- 
-
-/*
- * kprobe/do_mq_timedsend：消息队列发送系统调用入口探针
- * 作用：捕获 mq_timedsend 内核入口，保存本次发送操作上下文到 PERCPU 临时缓存 start_map
- * 搭配 kretprobe(mq_send_exit) 成对使用：入口存现场，返回时计算耗时、上报事件
- * 过滤逻辑：全局监控开关关闭则直接跳过，不写入缓存
- */
-/**
-* @brief mq_timedsend 内核函数入口钩子，记录发送起点信息
-* @param mqdes 消息队列操作句柄，区分不同消息队列实例
-* @param u_msg_ptr 用户态消息缓冲区指针（本程序未读取消息内容，仅记录长度）
-* @param msg_len 待发送消息数据字节长度
-* @param msg_prio 本次发送消息的优先级
-* @param ts 超时时间戳（本程序未使用）
-* @return 0 BPF探针固定返回值
-*/
-SEC("kprobe/do_mq_timedsend")
-int BPF_KPROBE(mq_send_enter, mqd_t mqdes, const char *u_msg_ptr, size_t msg_len, unsigned int msg_prio, struct timespec64 *ts)
-{
-	struct Msgqueue_ctrl *c = get_ctrl();
-	if (!c || !c->enable)
-		return 0;
-
-	int key = 0;
-	// 获取当前CPU专属临时缓存结构体
-	struct mq_start *v = bpf_map_lookup_elem(&start_map, &key);
-	if (!v)
-		return 0;
-
-	// 记录函数进入时刻纳秒时间戳，用于返回探针计算系统调用耗时
-	v->start_ts = bpf_ktime_get_ns();
-	// 保存消息队列句柄
-	v->mqdes = (bpf_s32_t)mqdes;
-	// 保存消息长度
-	v->msg_len = msg_len;
-	// 保存消息优先级
-	v->msg_prio = msg_prio;
-
+	bpf_map_delete_elem(&active_sends, &pid_tgid);
 	return 0;
 }
- 
- /*
-  * kretprobe/do_mq_timedsend：消息队列发送系统调用返回探针
-  * 配合上面 kprobe 成对使用：读取同CPU缓存，调用公共submit函数完成过滤、事件推送、统计更新
-  * 处理完成后清零 start_ts，清除缓存脏数据，避免下一次调用错乱
-  */
-/**
-* @brief mq_timedsend 内核函数返回钩子，统一提交发送事件
-* @param ret do_mq_timedsend 系统调用返回值（成功/失败码，当前逻辑未使用）
-* @return 0 BPF探针固定返回值
-*/
- SEC("kretprobe/do_mq_timedsend")
-int BPF_KRETPROBE(mq_send_exit, int ret)
+
+/* 接收返回后删除线程上下文；阻塞期间保留，供后续消息交付探针使用。 */
+SEC("fexit/do_mq_timedreceive")
+int BPF_PROG(mq_recv_exit, mqd_t mqdes, char *u_msg_ptr,
+	     size_t msg_len, unsigned int *u_msg_prio, struct timespec64 *ts,
+	     int ret)
 {
-	struct Msgqueue_ctrl *c = get_ctrl();
-	if (!c || !c->enable)
-		return 0;
+	bpf_u64_t pid_tgid = bpf_get_current_pid_tgid();
 
-	int key = 0;
-	// 获取当前CPU缓存的发送现场
-	struct mq_start *v = bpf_map_lookup_elem(&start_map, &key);
-	if (!v || v->start_ts == 0)
-		return 0;
-
-	// 获取当前进程TGID作为PID过滤依据
-	bpf_s32_t pid = bpf_get_current_pid_tgid();
-	// 调用公共逻辑：过滤、封装MQ_EV_SEND事件、推送ringbuf、更新发送统计
-	submit(v, pid, MQ_EV_SEND);
-	// 清空时间戳标记本条记录已消费，防止脏数据干扰后续mq操作
-	v->start_ts = 0;
-
+	(void)mqdes;
+	(void)u_msg_ptr;
+	(void)msg_len;
+	(void)u_msg_prio;
+	(void)ts;
+	(void)ret;
+	bpf_map_delete_elem(&active_receives, &pid_tgid);
 	return 0;
 }
- 
-
-/*
- * kprobe/do_mq_timedreceive：消息队列接收系统调用入口探针
- * 配套 kretprobe(mq_recv_exit) 成对使用
- * 捕获 mq_timedreceive 内核函数进入时机，保存接收操作现场到每CPU临时缓存 start_map
- * 仅监控开启时才记录数据，否则直接返回不处理
- */
-  /**
-  * @brief mq_timedreceive 内核接收函数入口钩子，记录接收起点上下文
-  * @param mqdes 消息队列操作句柄，标识目标消息队列
-  * @param u_msg_ptr 用户态存放接收消息的缓冲区指针（本程序不读取消息内容）
-  * @param msg_len 预期可接收的最大消息长度
-  * @param msg_prio 输出参数，用于存放读出消息的优先级，入口仅暂存字段位置
-  * @param ts 阻塞超时时间戳（代码未使用）
-  * @return 0 BPF探针标准返回值
-  */
-SEC("kprobe/do_mq_timedreceive")
-int BPF_KPROBE(mq_recv_enter, mqd_t mqdes, const char *u_msg_ptr, size_t msg_len, unsigned int msg_prio, struct timespec64 *ts)
-{
-	struct Msgqueue_ctrl *c = get_ctrl();
-	if (!c || !c->enable)
-		return 0;
-
-	int key = 0;
-	// 获取当前CPU专属临时缓存
-	struct mq_start *v = bpf_map_lookup_elem(&start_map, &key);
-	if (!v)
-		return 0;
-
-	// 记录接收调用进入时刻的内核纳秒时间戳，用于返回探针计算耗时
-	v->start_ts = bpf_ktime_get_ns();
-	// 保存消息队列句柄
-	v->mqdes = (bpf_s32_t)mqdes;
-	// 保存消息长度上限
-	v->msg_len = msg_len;
-	// 预留消息优先级字段
-	v->msg_prio = msg_prio;
-	// 标记本次操作为接收（0=接收，1=发送，当前逻辑仅预留未分支判断）
-	v->is_send = 0;
-
-	return 0;
-}
- 
-/*
-* kretprobe/do_mq_timedreceive：消息队列接收系统调用返回探针
-* 读取同CPU缓存的接收现场，调用公共submit函数过滤、生成接收事件、更新接收统计
-* 处理完成清空start_ts，清除缓存脏数据，避免下一次操作数据错乱
-*/
-/**
-* @brief mq_timedreceive 内核接收函数返回钩子，统一提交接收事件
-* @param ret do_mq_timedreceive 系统调用返回值（成功/失败码，当前代码未使用）
-* @return 0 BPF探针标准返回值
-*/
-SEC("kretprobe/do_mq_timedreceive")
-int BPF_KRETPROBE(mq_recv_exit, int ret)
-{
-	struct Msgqueue_ctrl *c = get_ctrl();
-	if (!c || !c->enable)
-		return 0;
-
-	int key = 0;
-	// 获取当前CPU缓存的接收起点上下文
-	struct mq_start *v = bpf_map_lookup_elem(&start_map, &key);
-	if (!v || v->start_ts == 0)
-		return 0;
-
-	// 获取当前进程TGID，用于PID过滤判断
-	bpf_s32_t pid = bpf_get_current_pid_tgid();
-	// 调用公共处理函数，标记事件类型为MQ_EV_RECV（接收事件）
-	submit(v, pid, MQ_EV_RECV);
-	// 清空时间戳，标记本条接收记录已消费，防止脏数据干扰后续操作
-	v->start_ts = 0;
-
-	return 0;
-}
- 

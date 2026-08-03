@@ -17,45 +17,80 @@
 static struct mutexlock_bpf *g_skel = NULL;
 
 /**
- * @brief 程序退出时读取内核stats_map，打印整机互斥锁竞争汇总统计
- * 仅存在竞争事件时才输出面板，无竞争不打印
- */
+* @brief 程序退出时读取内核stats_map，打印整机互斥锁竞争汇总统计
+* 仅存在竞争事件时才输出面板，无竞争不打印
+*
+* 核心背景：
+* stats_map 是 BPF_MAP_TYPE_PERCPU_ARRAY（每个CPU独立统计数据）
+* 内核中各个CPU互不干扰独立计数；用户态需要把所有CPU的数据聚合汇总，得到全局统计值
+*/
 static void print_stats(void)
 {
-	// BPF骨架未初始化直接返回
+	// BPF骨架未正常初始化，没有合法map句柄，直接退出，避免空指针访问
 	if (!g_skel)
 		return;
 
+	// 用于存放所有CPU累加汇总后的全局统计结果
 	struct Mutexlock_stats s = {};
+	// Percpu Array map固定key=0，只有一条记录，存储每个CPU独立的统计结构
 	int key = 0;
+	// 获取系统最大可用CPU核心数量（包含离线CPU，libbpf标准接口）
 	int ncpus = libbpf_num_possible_cpus();
+
 	/*
-	 * per-CPU value 的用户态缓冲区必须按 8 字节步长排列；只分配结构体
-	 * 大小乘 CPU 数会在结构体非 8 字节对齐时错读后续 CPU 数据。
-	 */
+	* 【非常关键】per-CPU map 用户态读取步长问题
+	* BPF per-cpu map 要求每个CPU的数据缓冲区起始地址必须满足8字节对齐；
+	* 如果结构体大小不是8的整数倍，直接使用sizeof(struct Mutexlock_stats)作为间隔，
+	* 会导致下一个CPU的数据起始位置不对，读取错乱。
+	* 计算规则：向上对齐到8字节边界
+	* (x +7) & ~7  标准8字节向上取整算法
+	*/
 	size_t stride = (sizeof(struct Mutexlock_stats) + 7) & ~((size_t)7);
+	// 缓冲区：存放所有CPU从内核读取出来的原始per-cpu统计数据
 	void *values;
 
+	// 获取CPU数量失败，直接返回
 	if (ncpus <= 0)
 		return;
+
+	// 分配缓冲区：ncpus个CPU，每个占用stride字节空间
 	values = calloc((size_t)ncpus, stride);
 	if (!values)
 		return;
+
+	/*
+	* 从内核percpu array map读取全部CPU的统计数据
+	* fd：stats_map的文件描述符
+	* &key：固定key=0
+	* values：输出缓冲区，存放所有CPU原始数据
+	* 成功返回0，失败返回负数
+	*/
 	if (bpf_map_lookup_elem(bpf_map__fd(g_skel->maps.stats_map), &key, values)) {
 		free(values);
 		return;
 	}
+
+	// 遍历每一个CPU，逐个取出统计数据，聚合累加
 	for (int cpu = 0; cpu < ncpus; cpu++) {
+		// 指针偏移：找到当前cpu对应的统计结构体起始地址
 		const struct Mutexlock_stats *v =
 			(const struct Mutexlock_stats *)((char *)values + (size_t)cpu * stride);
-		s.attempted += v->attempted;
-		s.contention_count += v->contention_count;
-		s.filtered_delay += v->filtered_delay;
-		s.ringbuf_dropped += v->ringbuf_dropped;
-		s.map_update_failed += v->map_update_failed;
-		s.lookup_missed += v->lookup_missed;
-		s.wait_total_ns += v->wait_total_ns;
-		/* max 及其锁地址/owner/contender 是一个逻辑快照，必须一起更新。 */
+
+		// 可累加指标：直接全部求和，得到全局总量
+		s.attempted += v->attempted;               // 进入mutex慢路径总次数
+		s.contention_count += v->contention_count; // 成功上报的锁竞争事件总数
+		s.filtered_delay += v->filtered_delay;     // 因等待时长低于阈值被过滤丢弃的事件数量
+		s.ringbuf_dropped += v->ringbuf_dropped;   // ringbuf缓冲区满，内核丢弃事件次数
+		s.map_update_failed += v->map_update_failed;// contention_map插入失败次数
+		s.lookup_missed += v->lookup_missed;       // kretprobe查找上下文map丢失次数
+		s.wait_total_ns += v->wait_total_ns;        // 所有上报事件等待耗时总和(纳秒)
+
+		/*
+		* 【注意：最大值不能直接累加！】
+		* 每个CPU各自记录本CPU上出现的最大等待锁事件；
+		* 需要对比，保留全局最大等待耗时对应的锁信息。
+		* 一旦发现当前CPU存在更大等待耗时，同步拷贝锁地址、进程PID、进程名快照。
+		*/
 		if (v->wait_max_ns > s.wait_max_ns) {
 			s.wait_max_ns = v->wait_max_ns;
 			s.max_lock_addr = v->max_lock_addr;
@@ -65,29 +100,45 @@ static void print_stats(void)
 			memcpy(s.max_contender_name, v->max_contender_name, sizeof(s.max_contender_name));
 		}
 	}
+
+	// 读取聚合完成，释放percpu数据缓冲区
 	free(values);
+
+	// 没有任何慢路径记录，无锁竞争，直接不输出统计面板，保持日志干净
 	if (!s.attempted && !s.contention_count)
 		return;
 
-	log_output_lock();
+	log_output_lock();  // 日志输出加锁，防止多线程打印错乱
 	printf("\n");
-	// 彩色打印统计表头
+	// 彩色打印面板标题
 	printf(C_CYAN C_BOLD "══════ 互斥锁统计 ══════\n" C_RESET);
+	/*
+	* attempted：进入__mutex_lock_slowpath总次数（触发慢路径）
+	* contention_count：满足时长阈值、成功通过ringbuf上报的事件数量
+	* filtered_delay：等待时长小于min_delay阈值被过滤丢弃的事件
+	*/
 	printf("  慢路径: %" PRIu64 "  上报: %" PRIu64 "  阈值过滤: %" PRIu64 "\n",
-	       s.attempted, s.contention_count, s.filtered_delay);
+		s.attempted, s.contention_count, s.filtered_delay);
+
+	// 存在有效上报事件，打印平均等待时间、最长等待锁详情
 	if (s.contention_count) {
+		// 总等待ns / 事件数量 = 平均等待时长
 		printf("  平均等待: %" PRIu64 " ns  最大等待: %" PRIu64 " ns\n",
-		       s.wait_total_ns / s.contention_count, s.wait_max_ns);
+			s.wait_total_ns / s.contention_count, s.wait_max_ns);
+		// 打印最慢锁内核地址、持锁进程、竞争进程（容器内PID）
 		printf("  最慢锁: 0x%" PRIx64 " owner=%d(%s) contender=%d(%s)\n",
-		       s.max_lock_addr, s.max_owner_pid, s.max_owner_name,
-		       s.max_contender_pid, s.max_contender_name);
+			s.max_lock_addr, s.max_owner_pid, s.max_owner_name,
+			s.max_contender_pid, s.max_contender_name);
 	}
+
+	// 打印运行健康指标，用来排查工具本身是否丢数据
 	printf("  健康: ringbuf_drop=%" PRIu64 " map_fail=%" PRIu64
-	       " lookup_miss=%" PRIu64 "\n",
-	       s.ringbuf_dropped, s.map_update_failed, s.lookup_missed);
+		" lookup_miss=%" PRIu64 "\n",
+		s.ringbuf_dropped, s.map_update_failed, s.lookup_missed);
 	printf(C_CYAN C_BOLD "════════════════════════════\n" C_RESET);
-	log_output_unlock();
+	log_output_unlock(); // 释放日志锁
 }
+ 
 
 /**
  * @brief RingBuffer事件回调函数，内核捕获锁竞争后自动触发执行

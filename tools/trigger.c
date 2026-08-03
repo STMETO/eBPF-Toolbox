@@ -16,6 +16,8 @@ static void usage(void) {
 		"  tcp       发起 TCP 连接 (127.0.0.1:19999) → 触发 HANDSHAKE\n"
 		"  udp       发送 UDP 包 → 触发 udp_monitor\n"
 		"  mq        POSIX 消息队列 send+receive → 触发 msgqueue\n"
+		"  mqdelay   消息入队后等待 50ms 再接收 → 验证驻留时间\n"
+		"  mqdirect  接收者先阻塞、发送者后发送 → 验证直接交付\n"
 		"  mutex     双线程互斥锁竞争 → 触发 mutexlock\n"
 		"  fs        open/read/write 临时文件 → 触发 fs_*\n"
 		"  syscall   getpid() 循环 → 触发 syscall\n"
@@ -63,6 +65,90 @@ static int do_mq(void) {
 	mq_unlink("/ebpf_test_mq");
 	printf("[mq] send+receive done\n");
 	return 0;
+}
+
+/*
+ * 驻留时间验证：消息成功进入队列后故意停留 50ms，再由同一进程接收。
+ * msgqueue 模块输出的 QUEUED residence 应接近 50ms；该触发器让测试结果
+ * 明显大于普通 send+receive 的几十微秒，便于人工确认指标语义。
+ */
+static int do_mq_delay(void) {
+	const char *name = "/ebpf_test_mq_delay";
+	struct mq_attr attr = {.mq_flags = 0, .mq_maxmsg = 10, .mq_msgsize = 64, .mq_curmsgs = 0};
+	mqd_t mq;
+	char buf[64];
+	const char *msg = "ebpf delayed message";
+
+	mq_unlink(name); /* 清理上次异常退出可能遗留的同名队列。 */
+	mq = mq_open(name, O_CREAT | O_RDWR, 0644, &attr);
+	if (mq == (mqd_t)-1) { perror("mq_open"); return 1; }
+	if (mq_send(mq, msg, strlen(msg) + 1, 0) < 0) {
+		perror("mq_send");
+		mq_close(mq);
+		mq_unlink(name);
+		return 1;
+	}
+	usleep(50000);
+	if (mq_receive(mq, buf, sizeof(buf), NULL) < 0)
+		perror("mq_receive");
+	mq_close(mq);
+	mq_unlink(name);
+	printf("[mqdelay] message stayed queued for about 50ms\n");
+	return 0;
+}
+
+struct mq_direct_args {
+	mqd_t mq;
+	int error;
+};
+
+/* 接收线程先进入阻塞 mq_receive，迫使后续发送走内核直接交付路径。 */
+static void *mq_direct_receiver(void *opaque) {
+	struct mq_direct_args *args = opaque;
+	char buf[64];
+
+	if (mq_receive(args->mq, buf, sizeof(buf), NULL) < 0) {
+		perror("mq_receive");
+		args->error = 1;
+	}
+	return NULL;
+}
+
+/*
+ * 直接交付验证：Linux 发现已有接收者等待时不会调用 msg_insert，而是把
+ * struct msg_msg 直接交给接收线程。监控结果应为 DIRECT、驻留时间 0。
+ */
+static int do_mq_direct(void) {
+	const char *name = "/ebpf_test_mq_direct";
+	struct mq_attr attr = {.mq_flags = 0, .mq_maxmsg = 10, .mq_msgsize = 64, .mq_curmsgs = 0};
+	struct mq_direct_args args = {};
+	const char *msg = "ebpf direct message";
+	pthread_t receiver;
+	mqd_t mq;
+	int rc;
+
+	mq_unlink(name);
+	mq = mq_open(name, O_CREAT | O_RDWR, 0644, &attr);
+	if (mq == (mqd_t)-1) { perror("mq_open"); return 1; }
+	args.mq = mq;
+	rc = pthread_create(&receiver, NULL, mq_direct_receiver, &args);
+	if (rc) {
+		fprintf(stderr, "pthread_create: %d\n", rc);
+		mq_close(mq);
+		mq_unlink(name);
+		return 1;
+	}
+	/* 给予接收线程足够时间进入内核等待队列，避免测试本身产生竞态。 */
+	usleep(20000);
+	if (mq_send(mq, msg, strlen(msg) + 1, 0) < 0) {
+		perror("mq_send");
+		args.error = 1;
+	}
+	pthread_join(receiver, NULL);
+	mq_close(mq);
+	mq_unlink(name);
+	printf("[mqdirect] receiver waited before send, direct delivery done\n");
+	return args.error;
 }
 
 /* ── mutex: 双线程竞争 ────────────────────────────────────── */
@@ -134,6 +220,8 @@ int main(int argc, char **argv) {
 	if      (!strcmp(cmd, "tcp"))     return do_tcp();
 	else if (!strcmp(cmd, "udp"))     return do_udp();
 	else if (!strcmp(cmd, "mq"))      return do_mq();
+	else if (!strcmp(cmd, "mqdelay")) return do_mq_delay();
+	else if (!strcmp(cmd, "mqdirect")) return do_mq_direct();
 	else if (!strcmp(cmd, "mutex"))   return do_mutex();
 	else if (!strcmp(cmd, "fs"))      return do_fs();
 	else if (!strcmp(cmd, "syscall")) return do_syscall();

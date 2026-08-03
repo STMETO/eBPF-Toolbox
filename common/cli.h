@@ -14,7 +14,7 @@ enum app_mode {
     APP_MODE_PREEMPT,         // 抢占延迟
 	APP_MODE_SYSCALL,      	// 系统调用延迟监控
 	APP_MODE_TCP_MONITOR,  	// 模式3：监控 TCP 建连延迟
-	APP_MODE_MSGQUEUE,     	// IPC：消息队列收发延迟
+	APP_MODE_MSGQUEUE,     	// IPC：POSIX 消息队列驻留时间
 	APP_MODE_MUTEXLOCK,    	// 锁：内核 mutex 慢路径等待
 
 	// 文件系统监控 (5)

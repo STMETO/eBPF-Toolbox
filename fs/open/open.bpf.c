@@ -9,6 +9,21 @@
  * 出口时合并为完整事件一次性推送给用户态。
  */
 
+/*
+应用程序执行 openat()，触发陷入内核（syscall）
+sys_enter_openat 触发 → 开始计时
+内核开始整套打开文件逻辑：
+    解析相对 / 绝对文件路径
+    逐级查找目录项（dentry 查找）
+    权限校验、inode 查找
+    文件系统层操作（ext4/xfs/btrfs）
+    如果需要，触发磁盘 IO 加载元数据（目录、inode）
+    分配文件结构体、生成新 fd
+所有逻辑跑完，准备切回用户态
+sys_exit_openat 触发 → 停止计时
+fd / 错误码返回给应用程序
+*/ 
+
 #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>

@@ -1,250 +1,333 @@
-/*
- * fs/read — 监控进程 read 系统调用
- *
- * 双挂载点设计（与 open 模块同架构）：
- *   sys_enter_read → 捕获 fd、PID、进程名，通过内核task文件描述符表反查文件路径，存入临时哈希tid_map
- *   sys_exit_read  → 捕获read系统调用返回值（实际读取字节数/错误码），取出入口缓存数据组装完整事件推送用户态
- *
- * 入口与出口数据通过 tid_map（key=线程TID）关联，事件处理完成后立即delete清理哈希条目，避免内核哈希内存持续膨胀。
- */
 #include <vmlinux.h>
-#include <bpf/bpf_helpers.h>
-#include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
-#include "read.h"
+#include <bpf/bpf_helpers.h>
 
- // BPF追踪程序许可证，tracepoint类必须GPL双协议才可正常加载内核
+#include "read.h"
+#include "common/pid_namespace.bpf.h"
+
+/**
+ * @brief BPF程序许可证
+ * Dual BSD/GPL 许可，允许内核加载tracepoint类型BPF程序，避免许可证校验失败
+ */
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
- // ctrl_map、stats_map全局数组统一固定key值
-const int ctrl_key = 0;
- 
+/**
+ * @brief 全局常量key
+ * 所有单元素MAP统一使用该key进行查找，避免循环分配栈变量
+ */
+static const int zero = 0;
+
+/**
+ * @struct read_entry_data
+ * @brief sys_enter_read捕获后保存的调用上下文
+ * 用于sys_enter_read与sys_exit_read配对，计算耗时、恢复调用参数
+ */
+struct read_entry_data {
+	bpf_u64_t enter_ts;             // read系统调用进入时刻纳秒时间戳
+	bpf_u64_t requested_count;      // read请求读取字节数（第二个参数count）
+	bpf_s32_t pid;                  // 观测工具PID命名空间内可见TGID（进程ID）
+	bpf_s32_t tid;                  // 观测工具PID命名空间内可见TID（线程ID）
+	bpf_s32_t fd;                   // read操作目标文件描述符
+	bpf_s8_t comm[TASK_COMM_LEN];   // 进程名称task_comm，最大16字节
+	bpf_s8_t path_name_[FS_READ_PATH_SIZE]; // fd对应的文件dentry基础名称
+};
+
+/**
+ * @brief ctrl_map：全局控制参数MAP
+ * BPF_MAP_TYPE_ARRAY，仅单个元素；用户态下发Read_ctrl配置，动态控制采集行为
+ */
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
 	__type(key, int);
 	__type(value, struct Read_ctrl);
 } ctrl_map SEC(".maps");
- 
- /**
-  * stats_map — 整机read系统调用全局统计MAP
-  * 持久累加所有过滤通过的read调用指标，程序退出用户态读取打印汇总报表
-  */
+
+/**
+ * @brief stats_map：每CPU独立统计MAP
+ * PERCPU_ARRAY，每个CPU拥有独立统计结构体，消除高频路径原子锁竞争，提升性能
+ * 用户态程序退出时，汇总所有CPU数据得到全局统计面板
+ */
 struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
 	__type(key, int);
 	__type(value, struct Read_stats);
 } stats_map SEC(".maps");
- 
- /**
-  * @struct entry_data
-  * tid_map哈希临时存储结构体，sys_enter_read入口缓存read调用现场信息
-  * @field pid 发起read操作的进程TGID
-  * @field fd read操作文件描述符
-  * @field comm 发起read的进程名称
-  * @field path_name_ 通过fd反查得到的文件全路径，失败为空字符串
-  */
- /*
-  * tid_map — 入口→出口临时存储HASH MAP
-  * key: 线程TID（bpf_get_current_pid_tgid低32位），唯一区分并发read调用线程
-  * value: entry_data 存储入口捕获的fd、pid、进程名、文件路径
-  * max_entries=10240：支持最多10240条并发未完成read调用，限制哈希内存上限
-  * 流程：sys_enter写入现场 → sys_exit读取处理后delete释放条目，防止哈希溢出
-  */
-struct entry_data {
-	bpf_u64_t enter_ts;
-	bpf_s32_t pid;
-	bpf_s32_t fd;
-	bpf_s8_t  comm[TASK_COMM_LEN];
-	bpf_s8_t  path_name_[FS_READ_PATH_SIZE];
-};
 
+/**
+ * @brief inflight_reads：正在执行的read系统调用哈希表
+ * key：宿主机初始PID命名空间全局TID（整机唯一，保障enter/exit可靠配对）
+ * value：read_entry_data上下文信息
+ * 注意：结构体内部pid/tid是转换后容器内可见ID，与key语义区分开
+ * max_entries限制最大并发未完成read调用，防止哈希表无限膨胀
+ */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 10240);
-	__type(key, u32);            /* tid 线程ID作为哈希键 */
-	__type(value, struct entry_data);
-} tid_map SEC(".maps");
- 
- /*
-  * rb — RingBuffer环形缓冲区
-  * 内核sys_exit_read组装完整Read_event事件后提交，用户态libbpf阻塞poll实时读取打印IO事件
-  * 总容量256KB，缓冲区满时分配内存失败直接丢弃当前事件
-  */
+	__type(key, bpf_u32_t);
+	__type(value, struct read_entry_data);
+} inflight_reads SEC(".maps");
+
+/**
+ * @brief rb：环形缓冲区
+ * BPF向用户态推送Read事件的通道，内核异步写入，libbpf ringbuffer轮询消费
+ */
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 256 * 1024);
 } rb SEC(".maps");
- 
- /* ========== 辅助工具函数 ========== */
+
 /**
-* @brief 内联工具函数：获取全局监控控制配置指针
-* @return ctrl_map存储的Read_ctrl结构体指针
-*/
+ * @brief 获取全局控制配置
+ * @return Read_ctrl指针，NULL代表查询失败
+ */
 static __always_inline struct Read_ctrl *get_ctrl(void)
 {
-	return bpf_map_lookup_elem(&ctrl_map, (void *)&ctrl_key);
+	return bpf_map_lookup_elem(&ctrl_map, &zero);
 }
 
- /*
-  * fill_path_from_fd — 工具函数：通过文件描述符fd反向解析对应文件路径
-  * 内核结构体逐级读取链路：task_struct -> files_struct -> fd数组 -> struct file -> dentry -> d_name文件名
-  * 采用BPF_CORE_READ CO-RE偏移自适应，兼容多内核版本无需重编译
-  * @param fd_num 待解析的文件描述符
-  * @param out 输出缓冲区，存放文件路径字符串
-  * @param out_sz 输出缓冲区最大长度
-  * 特性：解析失败缓冲区置空串；旧内核字段缺失会返回空路径，不中断整个监控逻辑
-  */
-static void fill_path_from_fd(bpf_s32_t fd_num, char *out, int out_sz)
-{
-	// 初始化输出缓冲区为空字符串，解析失败时保持空
-	if (out_sz > 0)
-		out[0] = '\0';
-
-	// 无效fd直接返回，无需解析
-	if (fd_num < 0)
-		return;
-
-	// 获取当前线程task_struct
-	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-	if (!task)
-		return;
-
-	// CO-RE安全读取task->files->fdt->fd 文件描述符数组指针
-	struct file **fd_array = BPF_CORE_READ(task, files, fdt, fd);
-	if (!fd_array)
-		return;
-
-	// 读取fd数组对应下标fd_num的struct file指针
-	struct file *filp;
-	bpf_probe_read_kernel(&filp, sizeof(filp), &fd_array[fd_num]);
-	if (!filp)
-		return;
-
-	// 读取file结构体关联的dentry目录项
-	struct dentry *dentry = BPF_CORE_READ(filp, f_path.dentry);
-	if (!dentry)
-		return;
-
-	// 读取dentry内文件名称qstr结构体
-	struct qstr d_name = BPF_CORE_READ(dentry, d_name);
-	if (!d_name.name || d_name.len == 0)
-		return;
-
-	// 安全拷贝内核文件名字符串到输出缓冲区
-	bpf_probe_read_kernel_str(out, out_sz, d_name.name);
-}
- 
- /* ========== 挂载点1：tracepoint/syscalls/sys_enter_read read入口钩子 ========== */
- /*
-  * 触发时机：进程刚进入read系统调用，尚未执行IO读取操作
-  * 功能：拆分pid/tid、获取fd，调用fill_path_from_fd通过fd反查文件路径，把整套调用现场存入tid_map哈希
-  * 前置过滤：监控开关关闭直接跳过，不执行解析与哈希写入操作
-  */
 /**
-* @brief read系统调用入口追踪点，缓存线程TID对应的fd、PID、进程名、文件路径
-* @param ctx tracepoint原生syscall入参结构体，args[0]为read传入的fd
-* @return 0 BPF tracepoint固定返回值
-*/
+ * @brief 获取当前CPU独立统计结构体
+ * @return Read_stats每CPU统计数据指针
+ */
+static __always_inline struct Read_stats *get_stats(void)
+{
+	return bpf_map_lookup_elem(&stats_map, &zero);
+}
+
+/**
+ * @brief 根据fd反向解析对应文件dentry基础文件名
+ * @param fd_num 文件描述符
+ * @param out 输出字符串缓冲区
+ * @param out_sz 缓冲区大小
+ * @return 0成功；负数失败
+ *
+ * 读取链路：task_struct -> files_struct -> fdtable -> fd数组 -> struct file -> dentry -> d_name
+ * 安全校验：提前校验fd不超过max_fds，防止非法fd造成内核地址越界读取
+ * 限制：仅获取文件名最后一级，**不生成完整绝对路径**
+ */
+static __always_inline int fill_name_from_fd(bpf_s32_t fd_num,
+					      bpf_s8_t *out, int out_sz)
+{
+	struct task_struct *task;
+	struct files_struct *files;
+	struct fdtable *fdt;
+	struct file **fd_array;
+	struct file *filp = NULL;
+	struct dentry *dentry;
+	struct qstr d_name;
+	bpf_u32_t max_fds;
+
+	if (out_sz <= 0)
+		return -1;
+	out[0] = '\0';
+	if (fd_num < 0)
+		return -1;
+
+	task = (struct task_struct *)bpf_get_current_task();
+	if (!task)
+		return -1;
+	files = BPF_CORE_READ(task, files);
+	if (!files)
+		return -1;
+	fdt = BPF_CORE_READ(files, fdt);
+	if (!fdt)
+		return -1;
+	max_fds = BPF_CORE_READ(fdt, max_fds);
+	// 校验fd合法性，防止越界访问fd数组
+	if ((bpf_u32_t)fd_num >= max_fds)
+		return -1;
+	fd_array = BPF_CORE_READ(fdt, fd);
+	if (!fd_array)
+		return -1;
+	if (bpf_probe_read_kernel(&filp, sizeof(filp), &fd_array[fd_num]) || !filp)
+		return -1;
+
+	dentry = BPF_CORE_READ(filp, f_path.dentry);
+	if (!dentry)
+		return -1;
+	d_name = BPF_CORE_READ(dentry, d_name);
+	if (!d_name.name || !d_name.len)
+		return -1;
+	return bpf_probe_read_kernel_str(out, out_sz, d_name.name) > 0 ? 0 : -1;
+}
+
+/**
+ * @brief tracepoint 系统调用进入read
+ * 触发时机：进程发起read()，刚进入内核，尚未执行文件IO逻辑
+ */
 SEC("tracepoint/syscalls/sys_enter_read")
 int read_entry(struct trace_event_raw_sys_enter *ctx)
 {
-	struct Read_ctrl *ctrl = get_ctrl();
+	struct read_entry_data entry = {};
+	struct Read_stats *stats;
+	struct Read_ctrl *ctrl;
+	bpf_u64_t global_pid_tgid;
+	bpf_u64_t visible_pid_tgid;
+	bpf_u32_t global_tid;
+
+	ctrl = get_ctrl();
+	// 采集总开关关闭，直接返回
 	if (!ctrl || !ctrl->enable)
 		return 0;
 
-	u64 pid_tgid = bpf_get_current_pid_tgid();
-	u32 tid = (u32)pid_tgid;                // 低32位 = 线程TID，哈希key
-	bpf_s32_t pid = (bpf_s32_t)(pid_tgid >> 32);  // 高32位 = 进程TGID(PID)
+	/*
+	 * 将内核全局pid/tid转换为目标PID命名空间内可见ID
+	* 返回0代表当前线程不在目标pidns，直接丢弃，实现容器采集边界隔离
+	* 即使target_pid=0，也只会捕获指定pidns内进程，不会全宿主机采集
+	 */
+	visible_pid_tgid = app_current_pid_tgid_ns(ctrl->pid_ns_dev,
+						      ctrl->pid_ns_ino);
+	if (!visible_pid_tgid)
+		return 0;
 
-	struct entry_data entry = {};
-	entry.pid = pid;
-	// read第一个系统调用参数为文件fd
-	entry.fd  = (bpf_s32_t)ctx->args[0];
+	stats = get_stats();
+	entry.pid = (bpf_s32_t)(visible_pid_tgid >> 32);
+	entry.tid = (bpf_s32_t)visible_pid_tgid;
+
+	// 自环防护：过滤观测工具自身进程，避免打印日志产生read无限递归捕获
+	if (ctrl->self_pid && ctrl->self_pid == entry.pid) {
+		if (stats)
+			stats->filtered_self++;
+		return 0;
+	}
+	// PID过滤：不匹配目标进程直接丢弃
+	if (ctrl->target_pid && ctrl->target_pid != entry.pid) {
+		if (stats)
+			stats->filtered_pid++;
+		return 0;
+	}
+	// 统计：成功通过前置过滤的read调用尝试次数
+	if (stats)
+		stats->attempted++;
+
+	// 尽早记录时间戳，保证测量区间覆盖完整read系统调用生命周期
 	entry.enter_ts = bpf_ktime_get_ns();
-	// 读取当前进程名称
+	entry.fd = (bpf_s32_t)ctx->args[0];
+	entry.requested_count = (bpf_u64_t)ctx->args[2];
 	bpf_get_current_comm(entry.comm, sizeof(entry.comm));
-	// 调用工具函数，通过fd反向解析文件路径
-	fill_path_from_fd(entry.fd, (char *)entry.path_name_, FS_READ_PATH_SIZE);
 
-	// 将本条read调用上下文存入tid_map哈希，等待出口追踪点匹配读取
-	bpf_map_update_elem(&tid_map, &tid, &entry, BPF_ANY);
+	// 反向解析fd对应的文件名，失败则统计路径查找失败指标
+	if (fill_name_from_fd(entry.fd, entry.path_name_,
+			      sizeof(entry.path_name_)) && stats)
+		stats->path_lookup_failed++;
 
+	// 获取宿主机全局唯一TID，作为inflight哈希表key
+	global_pid_tgid = bpf_get_current_pid_tgid();
+	global_tid = (bpf_u32_t)global_pid_tgid;
+	// 存入上下文，供exit配对；插入失败代表哈希表已满，统计异常
+	if (bpf_map_update_elem(&inflight_reads, &global_tid, &entry, BPF_ANY) &&
+	    stats)
+		stats->map_update_failed++;
 	return 0;
 }
- 
- /* ========== 挂载点2：tracepoint/syscalls/sys_exit_read read返回钩子 ========== */
- /*
-  * 触发时机：read系统调用执行完毕，即将返回用户态，可拿到read返回值（读取字节数/错误码）
-  * 完整流程：
-  * 1. 根据当前线程TID查询tid_map，取出入口缓存的fd、进程、文件路径
-  * 2. PID过滤：目标监控PID不匹配则删除哈希条目丢弃事件
-  * 3. 分配ringbuf事件，填充fd、PID、进程名、文件路径、实际读取字节数、时间戳
-  * 4. 推送事件到环形缓冲区，更新全局read统计
-  * 5. delete tid_map本条key，清除哈希脏数据防止并发read数据错乱
-  */
+
 /**
-* @brief read系统调用返回追踪点，组装完整read IO事件下发用户态并更新全局统计
-* @param ctx tracepoint原生返回参数，ret字段存放read返回值（读取字节/负错误码）
-* @return 0 BPF tracepoint固定返回值
-*/
+ * @brief tracepoint 系统调用退出read
+ * 触发时机：read内核逻辑执行完毕，准备返回用户态
+ * 核心：匹配enter上下文、计算耗时、执行过滤、组装事件下发用户态
+ */
 SEC("tracepoint/syscalls/sys_exit_read")
 int read_exit(struct trace_event_raw_sys_exit *ctx)
 {
-	struct Read_ctrl *ctrl = get_ctrl();
-	if (!ctrl || !ctrl->enable)
-		return 0;
+	struct read_entry_data *entry;
+	struct Read_event *event;
+	struct Read_stats *stats;
+	struct Read_ctrl *ctrl;
+	bpf_u64_t visible_pid_tgid;
+	bpf_u64_t now;
+	bpf_u64_t latency_ns;
+	bpf_u32_t global_tid;
 
-	u64 pid_tgid = bpf_get_current_pid_tgid();
-	u32 tid = (u32)pid_tgid;
+	// 使用全局宿主机TID查找入口保存的上下文
+	global_tid = (bpf_u32_t)bpf_get_current_pid_tgid();
+	entry = bpf_map_lookup_elem(&inflight_reads, &global_tid);
+	ctrl = get_ctrl();
 
-	// 通过当前线程TID匹配入口存入的read现场
-	struct entry_data *entry = bpf_map_lookup_elem(&tid_map, &tid);
-	if (!entry)
-		return 0;
-
-	/* PID过滤逻辑：配置目标监控PID，当前线程不匹配，清理哈希条目丢弃事件 */
-	if (ctrl->target_pid != 0 && entry->pid != ctrl->target_pid) {
-		bpf_map_delete_elem(&tid_map, &tid);
+	/*
+	 * 场景：exit找不到对应的enter上下文（lookup miss）
+	 * 成因：探针动态加载、入口map插入失败、调用过快enter未捕获
+	 * 仅统计符合采集规则的进程，避免无效计数
+	 */
+	if (!entry) {
+		if (ctrl && ctrl->enable) {
+			visible_pid_tgid = app_current_pid_tgid_ns(ctrl->pid_ns_dev,
+							      ctrl->pid_ns_ino);
+			stats = get_stats();
+			if (visible_pid_tgid && stats &&
+			    (bpf_s32_t)(visible_pid_tgid >> 32) != ctrl->self_pid &&
+			    (!ctrl->target_pid ||
+			     ctrl->target_pid == (bpf_s32_t)(visible_pid_tgid >> 32)))
+				stats->lookup_missed++;
+		}
 		return 0;
 	}
 
-	// 从ringbuf预分配内存封装read实时IO事件
-	struct Read_event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e) {
-		// ringbuf缓冲区满，分配失败，清理哈希脏数据丢弃事件
-		bpf_map_delete_elem(&tid_map, &tid);
+	/*
+	 * 安全兜底：read阻塞期间用户关闭采集开关
+	 * 无论是否继续采集，必须清理inflight条目，防止哈希表内存泄漏
+	 */
+	if (!ctrl || !ctrl->enable) {
+		bpf_map_delete_elem(&inflight_reads, &global_tid);
 		return 0;
 	}
 
-	// 填充read事件所有字段
-	e->latency_ns = bpf_ktime_get_ns() - entry->enter_ts;
-	e->pid         = entry->pid;
-	e->fd          = entry->fd;
-	e->timestamp_ns = bpf_ktime_get_ns();
-	e->bytes_read  = ctx->ret;  // read返回值：正数读取字节，负数为错误码
-	__builtin_memcpy(e->comm, entry->comm, sizeof(e->comm));
-	__builtin_memcpy(e->path_name_, entry->path_name_, sizeof(e->path_name_));
+	// 计算本次read系统调用耗时
+	now = bpf_ktime_get_ns();
+	latency_ns = now - entry->enter_ts;
+	stats = get_stats();
 
-	// 将完整read IO事件提交ringbuf，用户态libbpf阻塞读取打印
-	bpf_ringbuf_submit(e, 0);
-
-	/* 更新整机read系统调用全局统计指标 */
-	struct Read_stats *st = bpf_map_lookup_elem(&stats_map, &ctrl_key);
-	// 首次运行stats_map无初始化数据，创建全零统计结构体写入map
-	if (!st) {
-		struct Read_stats z = {};
-		bpf_map_update_elem(&stats_map, &ctrl_key, &z, BPF_ANY);
-		st = bpf_map_lookup_elem(&stats_map, &ctrl_key);
-	}
-	if (st) {
-		st->count++;        // read调用总次数+1
-		// 此处可扩展累加总耗时、最大耗时（当前结构体预留）
+	/*
+	 * 全局汇总统计：不受延迟阈值影响
+	 * 即使明细事件被过滤，completed、总耗时、失败计数依然正常统计
+	 */
+	if (stats) {
+		stats->completed++;
+		stats->total_ns += latency_ns;
+		if (ctx->ret < 0)
+			stats->failed++;
+		// 更新观测周期内最大耗时记录
+		if (latency_ns > stats->max_ns) {
+			stats->max_ns = latency_ns;
+			stats->max_pid = entry->pid;
+			__builtin_memcpy(stats->max_comm, entry->comm, TASK_COMM_LEN);
+		}
 	}
 
-	// 本条read调用处理完毕，删除tid_map哈希条目释放内核内存，防止哈希表膨胀溢出
-	bpf_map_delete_elem(&tid_map, &tid);
+	// 延迟阈值过滤：耗时低于阈值，不上报ringbuf明细，仅统计过滤数量
+	if (ctrl->min_delay_ns && latency_ns < ctrl->min_delay_ns) {
+		if (stats)
+			stats->filtered_delay++;
+		bpf_map_delete_elem(&inflight_reads, &global_tid);
+		return 0;
+	}
 
+	// 从ringbuf分配事件内存，准备下发用户态
+	event = bpf_ringbuf_reserve(&rb, sizeof(*event), 0);
+	if (!event) {
+		// ringbuf缓冲区满，事件丢失，统计丢包指标
+		if (stats)
+			stats->ringbuf_dropped++;
+		bpf_map_delete_elem(&inflight_reads, &global_tid);
+		return 0;
+	}
+
+	// 填充事件结构体
+	event->pid = entry->pid;
+	event->tid = entry->tid;
+	event->fd = entry->fd;
+	event->requested_count = entry->requested_count;
+	event->bytes_read = ctx->ret;          // read返回值：正数读取字节，负数=-errno
+	event->timestamp_ns = now;
+	event->latency_ns = latency_ns;
+	__builtin_memcpy(event->comm, entry->comm, TASK_COMM_LEN);
+	__builtin_memcpy(event->path_name_, entry->path_name_, FS_READ_PATH_SIZE);
+	bpf_ringbuf_submit(event, 0);
+	if (stats)
+		stats->submitted++;
+
+	// 配对完成，清理inflight哈希条目，防止表持续膨胀
+	bpf_map_delete_elem(&inflight_reads, &global_tid);
 	return 0;
 }

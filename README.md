@@ -47,7 +47,7 @@ My_eBPF_Poj/
 ## 快速开始
 
 运行环境需要内核 BTF、BPF ring buffer，以及所选模块使用的 tracepoint/fentry/kprobe；
-通常需要 root 或等价的 BPF/perfmon 权限。五个延迟模块使用
+通常需要 root 或等价的 BPF/perfmon 权限。支持容器 PID 过滤的模块使用
 `bpf_get_ns_current_pid_tgid()`，因此建议使用 Linux 5.7 或更新内核。
 
 ```bash
@@ -83,8 +83,12 @@ openat 入口到出口，`tcp_monitor` 为主动建连/重传/关闭生命周期
 |------|------|
 | 调度延迟 | `context` `preempt` |
 | 内核锁 | `mutexlock` |
-| IPC | `msgqueue` |
+| IPC | `msgqueue`（POSIX 消息队列驻留时间） |
 | 系统调用 | `syscall` |
 | 文件系统 | `fs_open` `fs_read` `fs_write` `block_io` |
 | 内存 | `proc_stat` `dr_snoop` `oom_killer` `slab_rate` |
 | 网络 | `tcp_monitor` `udp_monitor` |
+
+## TODO List
+  1.输出重定向到日志文件
+  2.可以考虑上层可视化延时分布
