@@ -26,7 +26,6 @@ int write_run(int, bool, bpf_s32_t, bpf_u64_t);
 int block_io_run(int, bool, bpf_s32_t, bpf_u64_t);
 int dr_snoop_run(int, bool, bpf_s32_t, bpf_u64_t);
 int oom_killer_run(int, bool, bpf_s32_t, bpf_u64_t);
-int proc_stat_run(int, bool, bpf_s32_t, bpf_u64_t);
 int slab_rate_run(int, bool, bpf_s32_t, bpf_u64_t);
 int tcp_monitor_run(int, bool, bpf_s32_t, bpf_u64_t);
 int udp_monitor_run(int, bool, bpf_s32_t, bpf_u64_t);
@@ -45,7 +44,6 @@ static const struct module_entry MODULE_TABLE[] = {
 	{"block_io",      APP_MODE_BLOCK_IO,        block_io_run},
 	{"dr_snoop",      APP_MODE_DR_SNOOP,        dr_snoop_run},
 	{"oom_killer",    APP_MODE_OOM_KILLER,      oom_killer_run},
-	{"proc_stat",     APP_MODE_PROC_STAT,       proc_stat_run},
 	{"slab_rate",     APP_MODE_SLAB_RATE,       slab_rate_run},
 	{"tcp_monitor",   APP_MODE_TCP_MONITOR,     tcp_monitor_run},
 	{"udp_monitor",   APP_MODE_UDP_MONITOR,     udp_monitor_run},

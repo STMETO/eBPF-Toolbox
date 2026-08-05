@@ -1,3 +1,24 @@
+/**
+* @kprobe oom_kill_process
+* @brief 钩子内核oom_kill_process函数，捕获OOM‑Killer杀死进程事件
+* 内核原型：void oom_kill_process(struct oom_control *oc, const char *message)
+*
+* 功能说明：
+* 当系统内存耗尽，OOM杀手选定目标进程并准备执行杀死逻辑时，该kprobe被触发。
+* 1. 读取ctrl_map全局控制开关，关闭时直接退出，不采集事件。
+* 2. 从oom_control结构体取出本次被选中待杀死的进程task_struct指针。
+* 3. 提取**被杀死进程**的pid、进程名comm。
+* 4. 获取触发本次OOM扫描上下文的进程：即当前正在执行OOM杀手逻辑的任务，记录其PID、虚拟内存总页数(total_vm)。
+*    注意：触发OOM的进程 ≠ 被OOM杀死的进程，二者经常不是同一个进程。
+* 5. 事件数据写入ringbuf环形缓冲区，投递到用户态解析输出；ringbuf满则直接丢弃事件。
+*
+* 字段说明(OomKiller_event)：
+*  oomkill_pid：被OOM杀手杀掉的进程PID
+*  comm：被OOM杀手杀掉的进程名称
+*  triggered_pid：触发OOM检测逻辑的进程PID
+*  mem_pages：触发OOM进程的虚拟内存总页数(单位：PAGE_SIZE),代表触发 OOM 扫描的那个进程的虚拟地址空间总页数
+*/
+
 #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>

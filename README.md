@@ -1,6 +1,6 @@
 # eBPF-Toolbox
 
-基于 eBPF 的 Linux 系统可观测性工具集，当前注册 15 个监测模块，提供统一命令行接口。
+基于 eBPF 的 Linux 系统可观测性工具集，当前注册 14 个监测模块，提供统一命令行接口。
 
 ## 架构
 
@@ -12,8 +12,8 @@ My_eBPF_Poj/
 │   ├── open/                   #   ...
 │   └── block_io/
 ├── mem/                        # 内存监测
-│   ├── proc_stat/ oom_killer/
-│   └── slab_rate/ dr_snoop/
+│   ├── oom_killer/ slab_rate/
+│   └── dr_snoop/
 ├── sched/                       # 调度延迟监测
 │   ├── context_switch/ preempt/
 ├── lock/                        # 内核锁竞争监测
@@ -86,9 +86,10 @@ openat 入口到出口，`tcp_monitor` 为主动建连/重传/关闭生命周期
 | IPC | `msgqueue`（POSIX 消息队列驻留时间） |
 | 系统调用 | `syscall` |
 | 文件系统 | `fs_open` `fs_read` `fs_write` `block_io` |
-| 内存 | `proc_stat` `dr_snoop` `oom_killer` `slab_rate` |
+| 内存 | `dr_snoop` `oom_killer` `slab_rate` |
 | 网络 | `tcp_monitor` `udp_monitor` |
 
 ## TODO List
   1.输出重定向到日志文件
   2.可以考虑上层可视化延时分布
+  3.增加kswapd测量

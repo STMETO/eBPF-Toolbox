@@ -146,7 +146,7 @@ static const char g_doc[] =
 	"  IPC:     msgqueue\n"
 	"  系统调用: syscall\n"
 	"  文件:    fs_open, fs_read, fs_write, block_io\n"
-	"  内存:    dr_snoop, oom_killer, proc_stat, slab_rate\n"
+	"  内存:    dr_snoop, oom_killer, slab_rate\n"
 	"  网络:    tcp_monitor, udp_monitor\n\n"
 	"多个模式用逗号分隔。\n"
 	"示例: sudo ./test -m context,mutexlock,fs_open -p 1234 -d 100000 -t 100";

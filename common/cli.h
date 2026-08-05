@@ -27,7 +27,6 @@ enum app_mode {
 	APP_MODE_DR_SNOOP,         // 模式20：直接回收追踪
 	APP_MODE_OOM_KILLER,       // 模式21：OOM Killer 事件
 	APP_MODE_SLAB_RATE,        // 模式22：Slab 分配速率
-    APP_MODE_PROC_STAT,       // 进程内存状态
 
 	// 网络监控 (2)
     APP_MODE_UDP_MONITOR,     // UDP 发送监控
