@@ -23,6 +23,149 @@
 *
 * @license Dual BSD/GPL
 */
+
+/*
+================================================================================
+说明：
+1. TX线程：执行 mq_send()；RX线程：执行 mq_receive()，两个是完全独立线程。
+2. RX线程有两种时序：
+   - DIRECT路径：RX先执行 fentry do_mq_timedreceive，线程在内核睡眠阻塞；之后TX才发送消息。
+   - QUEUED路径：TX发送完毕，消息驻留在BPF Map；之后RX才调用mq_receive取消息。
+3. store_msg / consume_message 运行在【RX接收线程上下文】，不属于TX发送流程。
+4. free_msg 兜底路径：异常、拷贝失败、mq_unlink销毁队列，不走store_msg，仅做map清理。
+================================================================================
+
+【TX线程】应用层：mq_send()
+    │
+    ▼
+┌────────────────────────┐
+│ fentry do_mq_timedsend │
+└──────────┬─────────────┘
+           │ 1.采集发送元数据：sender_pid / mqdes / msg_prio / msg_len / sender_comm
+           │ 2.key=pid_tgid，写入 active_sends(HASH)
+           ▼
+      内核执行 do_mq_timedsend 内部逻辑
+           │
+           ▼
+      load_msg() 分配 struct msg_msg、拷贝用户消息
+           │
+      ┌──────────────┐
+      │ fexit load_msg│
+      └──────┬───────┘
+             │ 过滤：仅处理当前线程存在 active_sends 的调用，过滤System‑V消息队列
+             │ msg_key = (bpf_u64_t)ret;  // ret为struct msg_msg*
+             │ if (!valid_msg_ptr(ret)) 直接返回，丢弃追踪
+             │ 1.组装 mq_pending_msg，写入 pending_messages(LRU_HASH, key=msg_key)
+             │ 2.回填 active_sends[pid_tgid]->msg_key = msg_key
+             ▼
+      ├────────────────────────────────────────────┐
+      │ 内核运行时二分支                           │
+      │ A. 无正在阻塞等待的接收者 → 调用msg_insert  │ B.已有阻塞接收者 → pipelined_send，不调用msg_insert(DIRECT路径)
+      ▼(A分支 QUEUED)                              ▼(B分支 DIRECT)
+┌────────────────┐                     do_mq_timedsend 继续向下执行
+│ fexit msg_insert│
+└───────┬────────┘
+        │ ret == 0 入队成功：
+        │   1.查询 pending_messages[msg_key]
+        │   2.记录 enqueue_ns = bpf_ktime_get_ns()
+        │   3.组装 mq_queued_msg，写入 queued_messages(LRU_HASH, key=msg_key)
+        │   4.bpf_map_delete_elem(&pending_messages, &msg_key)
+        │ ret != 0：入队失败，不继续追踪
+        ▼
+do_mq_timedsend 继续向下执行
+        │
+┌───────────────────────┐
+│ fexit do_mq_timedsend │   // TX系统调用返回探针
+└──────────┬────────────┘
+           │ 查询 active_sends[pid_tgid]
+           │ if (send->msg_key 有效) {
+           │     查询 pending_messages[msg_key]
+           │     ├─存在 && ret == 0：DIRECT路径
+           │     │    拷贝 mq_pending_msg 到栈；写入 direct_messages(LRU_HASH, key=msg_key)
+           │     │    bpf_map_delete_elem(&pending_messages, &msg_key)
+           │     └─不存在：已经被msg_insert删除，QUEUED路径，不做操作
+           │ }
+           │ bpf_map_delete_elem(&active_sends, &pid_tgid); // 清理TX线程上下文
+           ▼
+TX线程 mq_send() 返回应用层
+           │
+           ▼
+【消息驻留阶段，消息元数据保存在BPF LRU Map中】
+    QUEUED路径：queued_messages[msg_key]
+    DIRECT路径：direct_messages[msg_key]
+--------------------------------------------------------------------------------
+
+【RX线程】应用层：mq_receive()
+    │
+    ▼
+┌──────────────────────────┐
+│ fentry do_mq_timedreceive│
+└────────────┬─────────────┘
+             │ 1.采集接收元数据：receiver_pid / mqdes / receiver_comm
+             │ 2.key=pid_tgid，写入 active_receives(HASH)
+             ▼
+     内核执行 do_mq_timedreceive 内部逻辑
+             │
+             ▼
+     此处RX线程可能内核睡眠阻塞，等待消息到来 
+             │ 消息到达，RX线程被唤醒继续执行
+             ▼
+     ┌──────────────────┐
+     │ fentry store_msg │  // 消息取出后、copy_to_user之前；正常消费路径
+     └────────┬─────────┘
+              │ consume_message(msg, count_unmatched=true);
+              ▼
+     ┌────────────────────────────┐
+     │ fexit do_mq_timedreceive   │
+     └────────────┬───────────────┘
+                  │ bpf_map_delete_elem(&active_receives, &pid_tgid); //清理RX线程上下文
+                  ▼
+RX线程 mq_receive() 返回应用层
+
+--------------------------------------------------------------------------------
+【兜底异常路径：不走store_msg】
+内核直接执行 free_msg(msg)  // 用户拷贝出错 / mq_unlink销毁队列 / 发送失败释放消息
+    │
+    ▼
+fentry free_msg
+    │ consume_message(msg, count_unmatched=false); //仅清理map，不计unmatched_count
+    ▼
+return
+
+--------------------------------------------------------------------------------
+consume_message(msg, count_unmatched)
+    msg_key = (bpf_u64_t)msg;
+    pid_tgid = bpf_get_current_pid_tgid();
+    receiver = bpf_map_lookup_elem(&active_receives, &pid_tgid);
+
+    ├─分支1：queued_messages[msg_key] 存在  // QUEUED排队消息
+    │   拷贝map值到栈 queued_copy
+    │   bpf_map_delete_elem(&queued_messages, &msg_key)
+    │   if(receiver) submit_queued(&queued_copy, receiver);
+    │       ▶ residence_ns = bpf_ktime_get_ns() - queued_copy.enqueue_ns
+    │       ▶ 更新 stats queued_count / queued_total_ns / queued_max_ns
+    │       ▶ ctrl->min_delay_ns过滤，满足条件向ringbuf提交MQ_DELIVERY_QUEUED事件
+    │
+    ├─分支2：direct_messages[msg_key] 存在  // DIRECT：发送fexit已经完成迁移
+    │   拷贝map值到栈 direct_copy
+    │   bpf_map_delete_elem(&direct_messages, &msg_key)
+    │   if(receiver) submit_direct(&direct_copy, receiver);
+    │       ▶ residence_ns = 0，stats direct_count++
+    │       ▶ min_delay_ns>0时，不输出ringbuf事件
+    │
+    ├─分支3：pending_messages[msg_key] 存在 // 多核竞态：store_msg先执行，send_exit还未执行
+    │   拷贝map值到栈 direct_copy
+    │   bpf_map_delete_elem(&pending_messages, &msg_key)
+    │   if(receiver) submit_direct(&direct_copy, receiver);
+    │
+    └─分支4：以上全部查找失败 → unmatched
+        if(receiver && count_unmatched == true) {
+            stats->unmatched_count ++;
+        }
+        // count_unmatched==false(free_msg兜底)：不统计unmatched_count
+================================================================================
+*/
+
 #include <vmlinux.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
@@ -367,8 +510,7 @@ static __always_inline void submit_queued(const struct mq_queued_msg *queued,
 	event->msg_prio = queued->msg_prio;
 	event->delivery_type = MQ_DELIVERY_QUEUED;
 	__builtin_memcpy(event->sender_comm, queued->sender_comm, TASK_COMM_LEN);
-	__builtin_memcpy(event->receiver_comm, receiver->receiver_comm,
-			TASK_COMM_LEN);
+	__builtin_memcpy(event->receiver_comm, receiver->receiver_comm, TASK_COMM_LEN);
 	bpf_ringbuf_submit(event, 0);
 }
 
@@ -416,8 +558,7 @@ static __always_inline void submit_direct(const struct mq_pending_msg *pending,
 	event->msg_prio = pending->msg_prio;
 	event->delivery_type = MQ_DELIVERY_DIRECT;
 	__builtin_memcpy(event->sender_comm, pending->sender_comm, TASK_COMM_LEN);
-	__builtin_memcpy(event->receiver_comm, receiver->receiver_comm,
-			TASK_COMM_LEN);
+	__builtin_memcpy(event->receiver_comm, receiver->receiver_comm, TASK_COMM_LEN);
 	bpf_ringbuf_submit(event, 0);
 }
 
