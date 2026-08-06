@@ -47,9 +47,9 @@ struct tcp_sess {
 	bpf_bool_t handshake_reported; // 防止同一连接重复结算握手
 	bpf_u16_t sport, dport;     // 统一为主机字节序的源/目的端口
 	bpf_s32_t af;               // AF_INET 或 AF_INET6
-	bpf_u32_t saddr_v4, daddr_v4;
-	bpf_u8_t saddr_v6[16], daddr_v6[16];
-	bpf_s8_t comm[TASK_COMM_LEN];
+	bpf_u32_t saddr_v4, daddr_v4;			//  saddr_v4/daddr_v4 IPv4源/目的地址，网络字节序
+	bpf_u8_t saddr_v6[16], daddr_v6[16];	//saddr_v6/daddr_v6 IPv6源/目的地址数组
+	bpf_s8_t comm[TASK_COMM_LEN];			// comm 发起连接的进程名 TASK_COMM_LEN字节
 };
 
 /* ===================== 环形缓冲区对外输出事件结构体 ===================== */

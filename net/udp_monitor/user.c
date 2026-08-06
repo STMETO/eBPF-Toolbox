@@ -3,8 +3,10 @@
 #include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include "common/cli.h"
 #include "common/types.h"
@@ -13,6 +15,7 @@
 #include "net/udp_monitor/skel.h"
 
 static struct udp_monitor_bpf *g_skel = NULL;
+static int g_ncpus;
 
 /**
  * @brief 将IPv4/IPv6地址转为人类可读字符串
@@ -24,12 +27,37 @@ static struct udp_monitor_bpf *g_skel = NULL;
  */
 static void ip_str(char *buf, size_t len, int af, uint32_t v4, uint8_t *v6)
 {
-	if (af == AF_INET)
+	/*
+	 * 全零地址在本模块中表示入口回退未能得到路由后的地址，不把它伪装成
+	 * 实际发送地址0.0.0.0/::，直接输出问号更符合五元组语义。
+	 */
+	if (af == AF_INET && v4 == 0)
+		snprintf(buf, len, "?");
+	else if (af == AF_INET)
 		inet_ntop(AF_INET, &v4, buf, len);
-	else if (af == AF_INET6)
-		inet_ntop(AF_INET6, v6, buf, len);
+	else if (af == AF_INET6) {
+		static const uint8_t zero_v6[16];
+
+		if (memcmp(v6, zero_v6, sizeof(zero_v6)) == 0)
+			snprintf(buf, len, "?");
+		else
+			inet_ntop(AF_INET6, v6, buf, len);
+	}
 	else
 		snprintf(buf, len, "?"); // 未知地址族占位
+}
+
+/** 将内核事件中的五元组来源转换为简短、稳定的输出标签。 */
+static const char *tuple_source_str(bpf_u8_t source)
+{
+	switch (source) {
+	case UDP_TUPLE_FLOW:
+		return "FLOW";   // 路由完成后的flowi4/flowi6，代表真实发包五元组
+	case UDP_TUPLE_MSG:
+		return "MSG";    // 目的地址来自内核msghdr，源地址可能仍是回退值
+	default:
+		return "SOCKET"; // connect socket缓存；主要用于未经过send_skb的边界场景
+	}
 }
 
 /**
@@ -42,18 +70,73 @@ static void print_stats(void)
 		return;
 
 	struct UdpMonitor_stats s = {};
+	size_t stride = (sizeof(struct UdpMonitor_stats) + 7U) & ~7U;
+	void *values;
 	int key = 0;
 	// 读取全局统计数组唯一条目；读取失败或无任何发包事件直接不输出
-	if (bpf_map__lookup_elem(g_skel->maps.stats_map, &key, sizeof(key),
-				 &s, sizeof(s), 0) || s.count == 0)
+	/*
+	 * 【现实现修正】stats_map已经改为PERCPU_ARRAY，必须按8字节对齐后的
+	 * value大小为所有possible CPU分配缓冲区，再逐CPU合并，不能继续按
+	 * 普通ARRAY只读取一个结构体。
+	 */
+	if (g_ncpus <= 0)
+		return;
+	values = calloc((size_t)g_ncpus, stride);
+	if (!values)
+		return;
+	if (bpf_map_lookup_elem(bpf_map__fd(g_skel->maps.stats_map), &key, values)) {
+		free(values);
+		return;
+	}
+	for (int cpu = 0; cpu < g_ncpus; cpu++) {
+		const struct UdpMonitor_stats *v =
+			(const void *)((char *)values + (size_t)cpu * stride);
+
+		s.attempted += v->attempted;
+		s.count += v->count;
+		s.failed += v->failed;
+		s.total_ns += v->total_ns;
+		s.total_bytes += v->total_bytes;
+		s.filtered_pid += v->filtered_pid;
+		s.filtered_latency += v->filtered_latency;
+		s.ringbuf_dropped += v->ringbuf_dropped;
+		s.map_update_failed += v->map_update_failed;
+		s.lookup_missed += v->lookup_missed;
+		s.nested_calls += v->nested_calls;
+		s.flow_tuple += v->flow_tuple;
+		s.fallback_tuple += v->fallback_tuple;
+		if (v->max_ns > s.max_ns) {
+			s.max_ns = v->max_ns;
+			s.max_pid = v->max_pid;
+			s.max_tid = v->max_tid;
+			memcpy(s.max_comm, v->max_comm, sizeof(s.max_comm));
+		}
+	}
+	free(values);
+	if (!s.attempted && !s.count && !s.failed)
 		return;
 
 	// 彩色打印统计面板
+	log_output_lock();
 	printf(C_CYAN C_BOLD "\n══════ UDP 监控统计 ══════\n" C_RESET);
-	printf("  发送: %" PRIu64 " 次  %" PRIu64 " 字节\n", s.count, s.total_bytes);
-	printf("  平均: %" PRIu64 " ns  最大: %" PRIu64 " ns (PID=%d %s)\n",
-	       s.total_ns / s.count, s.max_ns, s.max_pid, s.max_comm);
+	printf("  尝试: %" PRIu64 "  成功: %" PRIu64 "  失败: %" PRIu64
+	       "  字节: %" PRIu64 "\n",
+	       s.attempted, s.count, s.failed, s.total_bytes);
+	if (s.count)
+		printf("  平均: %" PRIu64 " ns  最大: %" PRIu64
+		       " ns (PID=%u TID=%u %s)\n",
+		       s.total_ns / s.count, s.max_ns, s.max_pid, s.max_tid,
+		       s.max_comm);
+	printf("  五元组: flow=%" PRIu64 " fallback=%" PRIu64
+	       "  过滤: PID=%" PRIu64 " 延迟=%" PRIu64 "\n",
+	       s.flow_tuple, s.fallback_tuple, s.filtered_pid,
+	       s.filtered_latency);
+	printf("  健康: ringbuf_drop=%" PRIu64 " map_fail=%" PRIu64
+	       " lookup_miss=%" PRIu64 " nested=%" PRIu64 "\n",
+	       s.ringbuf_dropped, s.map_update_failed, s.lookup_missed,
+	       s.nested_calls);
 	printf(C_CYAN C_BOLD "════════════════════════════\n" C_RESET);
+	log_output_unlock();
 }
 
 /**
@@ -71,19 +154,26 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	const struct UdpMonitor_event *e = data;
 	(void)ctx;
-	(void)data_sz;
 	char src[64], dst[64];
+
+	/* ABI防御：旧对象或损坏记录尺寸不足时不越界解释事件。 */
+	if (data_sz < sizeof(*e))
+		return 0;
 
 	// 格式化源、目的IP字符串
 	ip_str(src, sizeof(src), e->af, e->saddr_v4, (uint8_t*)e->saddr_v6);
 	ip_str(dst, sizeof(dst), e->af, e->daddr_v4, (uint8_t*)e->daddr_v6);
 
 	// 打印基础信息：PID、进程名、IP端口、发送字节
-	LOG("PID=%-6d(%-16s) %s:%-5d → %s:%-5d | %-6" PRIu64 " B | ",
-	    e->pid, e->comm, src, e->sport, dst, e->dport, e->len);
+	log_output_lock();
+	LOG("PID=%-6u TID=%-6d (%-16s) %s:%-5u → %s:%-5u | %-6" PRIu64
+	    " B | %-6s | ",
+	    e->tgid, e->pid, e->comm, src, e->sport, dst, e->dport, e->len,
+	    tuple_source_str(e->tuple_source));
 	// 彩色打印系统调用延迟，区分低/高延迟
 	log_col_ns(e->latency_ns, 10000, 100000);
 	printf("\n");
+	log_output_unlock();
 	return 0;
 }
 
@@ -103,6 +193,12 @@ int udp_monitor_run(int poll_timeout_ms, bool enable,
 	const int key = 0;
 	int err = 0;
 
+	g_ncpus = libbpf_num_possible_cpus();
+	if (g_ncpus <= 0) {
+		fprintf(stderr, "获取possible CPU数量失败\n");
+		return 1;
+	}
+
 	// 1. 打开并加载BPF骨架ELF，执行内核verifier校验
 	skel = udp_monitor_bpf__open_and_load();
 	if (!skel) {
@@ -117,6 +213,11 @@ int udp_monitor_run(int poll_timeout_ms, bool enable,
 		.min_latency_ns = min_latency_ns,
 		.target_pid = target_pid
 	};
+	err = app_get_pid_namespace(&ctrl.pid_ns_dev, &ctrl.pid_ns_ino);
+	if (err) {
+		fprintf(stderr, "读取PID namespace失败: %s\n", strerror(-err));
+		goto cleanup;
+	}
 	err = bpf_map__update_elem(skel->maps.ctrl_map, &key, sizeof(key),
 				   &ctrl, sizeof(ctrl), BPF_ANY);
 	if (err < 0) {
@@ -141,6 +242,7 @@ int udp_monitor_run(int poll_timeout_ms, bool enable,
 	}
 
 	// 打印启动横幅、当前过滤规则
+	log_output_lock();
 	log_banner("UDP 发送监控", enable);
 	if (target_pid)
 		LOG("过滤 PID=%d  阈值=%" PRIu64 " ns\n", target_pid, min_latency_ns);
@@ -150,9 +252,11 @@ int udp_monitor_run(int poll_timeout_ms, bool enable,
 		LOG("过滤 ALL PID  阈值=无\n");
 
 	// 打印输出表头分隔线
-	LOG_HDR("%-7s %-16s %-22s %-22s %-10s %s",
-		"PID", "COMM", "SRC:PORT", "DST:PORT", "BYTES", "DELAY");
+	LOG_HDR("%-7s %-7s %-16s %-22s %-22s %-10s %-7s %s",
+		"PID", "TID", "COMM", "SRC:PORT", "DST:PORT", "BYTES",
+		"TUPLE", "DELAY");
 	LOG_SEP();
+	log_output_unlock();
 
 	// 6. 主循环：阻塞轮询ringbuf，持续消费内核UDP事件
 	while (!app_should_exit()) {

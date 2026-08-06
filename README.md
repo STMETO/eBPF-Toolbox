@@ -65,10 +65,16 @@ sudo ./test -m context,mutexlock,fs_open,tcp_monitor,dr_snoop \
 ```
 
 - `-p` 按启动工具所在 PID namespace 的用户可见 TGID 过滤，`0` 表示全部。
+  `slab_rate` 中它表示分配发生时的 current 进程，只能用于定位分配执行
+  上下文，不能解释为 slab 对象的所有者。
 - `-d` 是最小延迟阈值，单位 ns；低于阈值的延迟明细不会进入 ringbuf。
   TCP 模块将它用于握手延迟；重传没有耗时字段，close 事件保留用于输出
-  完整生命周期和累计重传数。
-- `-t` 是 ringbuf poll 的最大等待时间，事件到达时会提前唤醒。
+  完整生命周期和累计重传数。`slab_rate` 是速率而非延迟模块，会忽略该参数。
+- `-t` 通常是 ringbuf poll 的最大等待时间，事件到达时会提前唤醒；在
+  `slab_rate` 中它是统计输出窗口，模块会按实际经过时间换算 `/s`。
+- `slab_rate` 在提供新版 `kmem_cache_alloc` tracepoint 原型的内核上按 cache
+  名称聚合；旧内核无法从该事件取得 cache 指针时，会安全退化为按大小档位
+  聚合，并在退出统计中标明兼容模式。
 - `-e 0` 保持程序加载和 attach，但关闭内核态采集。
 
 五个代表模块的计时语义分别是：`context` 为 wakeup 到 switch-in 的

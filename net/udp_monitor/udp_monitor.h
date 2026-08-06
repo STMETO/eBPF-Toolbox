@@ -11,6 +11,17 @@
 	#define AF_INET6 10
 #endif
 
+/*
+ * 五元组来源用于区分“路由完成后的真实发包地址”和入口阶段的回退地址。
+ * FLOW 的可信度最高；MSG/SOCKET 只在 cork、异常返回或下层探针未命中时使用。
+ */
+ enum UdpTupleSource {
+	UDP_TUPLE_SOCKET = 0,   // 从sock结构体缓存拿五元组
+	UDP_TUPLE_MSG = 1,      // 从msghdr->msg_name拿五元组(sendto传入)
+	UDP_TUPLE_FLOW = 2,     // 从udp_send_skb阶段flowi4/flowi4+skb报文头拿到路由决议之后真实五元组
+};
+
+
 /**
  * @struct UdpMonitor_ctrl
  * @brief UDP监控全局控制配置结构体，存储在ctrl_map数组Map
@@ -22,6 +33,8 @@ struct UdpMonitor_ctrl {
 	bpf_bool_t enable;
 	bpf_u64_t  min_latency_ns;
 	bpf_s32_t  target_pid;
+	bpf_u64_t  pid_ns_dev;   // bpf_get_ns_current_pid_tgid 使用的nsfs设备号
+	bpf_u64_t  pid_ns_ino;   // 工具所在PID namespace的inode
 };
 
 /**
@@ -36,11 +49,14 @@ struct UdpMonitor_ctrl {
 struct UdpMonitor_event {
 	bpf_u64_t ts_ns, latency_ns;
 	bpf_u64_t len;             // 发送字节数
-	bpf_s32_t pid;
-	bpf_u32_t tgid;
-	bpf_u16_t sport, dport;
+	bpf_s32_t pid;              // 线程TID（保留原字段名兼容现有代码）
+	bpf_u32_t tgid;             // 进程PID
+	bpf_s32_t result;           // udp_sendmsg返回值；当前只上报result>=0的成功发送
+	bpf_u16_t sport, dport;     // 两个端口统一为主机字节序
 	bpf_u32_t saddr_v4, daddr_v4;
 	int af;
+	bpf_u8_t tuple_source;      // enum UdpTupleSource
+	bpf_u8_t padding[3];
 	bpf_s8_t  comm[TASK_COMM_LEN];
 	bpf_u8_t  saddr_v6[16], daddr_v6[16];
 };
@@ -54,10 +70,26 @@ struct UdpMonitor_event {
  * @field total_bytes 累计发送UDP报文总字节数
  * @field max_pid 产生最大延迟的线程LWP ID
  * @field max_comm 产生最大延迟的进程名称
+ * 【现实现修正】max_pid现表示TGID，并增加max_tid单独保存线程LWP ID；
+ * stats_map使用PERCPU_ARRAY，用户态会合并全部CPU副本。
  */
 struct UdpMonitor_stats {
-	bpf_u64_t count, total_ns, max_ns, total_bytes;
-	bpf_u32_t max_pid;
+	bpf_u64_t attempted;          // 通过PID过滤并建立入口上下文的外层调用数
+	bpf_u64_t count;              // 成功完成的UDP发送调用数
+	bpf_u64_t failed;             // udp_sendmsg返回负错误码的调用数
+	bpf_u64_t total_ns;
+	bpf_u64_t max_ns;
+	bpf_u64_t total_bytes;        // 成功发送的实际返回字节数之和
+	bpf_u64_t filtered_pid;
+	bpf_u64_t filtered_latency;
+	bpf_u64_t ringbuf_dropped;
+	bpf_u64_t map_update_failed;
+	bpf_u64_t lookup_missed;
+	bpf_u64_t nested_calls;       // IPv4-mapped IPv6等内部嵌套调用数
+	bpf_u64_t flow_tuple;         // 从flowi4/flowi6取得真实路由五元组的次数
+	bpf_u64_t fallback_tuple;     // 仅能使用msg/socket入口信息的次数
+	bpf_u32_t max_pid;            // 最大延迟事件的进程PID
+	bpf_u32_t max_tid;            // 最大延迟事件的线程TID
 	bpf_s8_t  max_comm[TASK_COMM_LEN];
 };
 

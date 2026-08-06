@@ -15,6 +15,8 @@ static void usage(void) {
 	fprintf(stderr, "用法: ./trigger <命令>\n\n"
 		"  tcp       发起 TCP 连接 (127.0.0.1:19999) → 触发 HANDSHAKE\n"
 		"  udp       发送 UDP 包 → 触发 udp_monitor\n"
+		"  udpconn   connect+send IPv4 UDP → 验证socket目的地址路径\n"
+		"  udp6      sendto IPv6 ::1 → 验证IPv6五元组\n"
 		"  mq        POSIX 消息队列 send+receive → 触发 msgqueue\n"
 		"  mqdelay   消息入队后等待 50ms 再接收 → 验证驻留时间\n"
 		"  mqdirect  接收者先阻塞、发送者后发送 → 验证直接交付\n"
@@ -22,7 +24,7 @@ static void usage(void) {
 		"  fs        open/read/write 临时文件 → 触发 fs_*\n"
 		"  syscall   getpid() 循环 → 触发 syscall\n"
 		"  sched     sched_yield 循环 → 触发 context_switch/preempt\n"
-		"  slab      malloc/free 循环 → 触发 slab_rate\n"
+		"  slab      创建/销毁内核对象 → 触发 slab_rate\n"
 		"  all       依次执行以上全部\n");
 }
 
@@ -49,6 +51,49 @@ static int do_udp(void) {
 	sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&addr, sizeof(addr));
 	close(fd);
 	printf("[udp] sent 5 bytes to 127.0.0.1:9\n");
+	return 0;
+}
+
+/* ── udpconn: connect后send，验证无msg_name时的连接socket路径 ── */
+static int do_udp_connect(void) {
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	struct sockaddr_in addr = {.sin_family = AF_INET, .sin_port = htons(9)};
+	const char *msg = "hello-connected";
+
+	if (fd < 0) { perror("socket"); return 1; }
+	inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+	if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+		perror("connect UDP");
+		close(fd);
+		return 1;
+	}
+	if (send(fd, msg, strlen(msg), 0) < 0) {
+		perror("send UDP");
+		close(fd);
+		return 1;
+	}
+	close(fd);
+	printf("[udpconn] sent %zu bytes to connected 127.0.0.1:9\n", strlen(msg));
+	return 0;
+}
+
+/* ── udp6: IPv6 sendto，验证udpv6_sendmsg及flowi6采集 ─────── */
+static int do_udp6(void) {
+	int fd = socket(AF_INET6, SOCK_DGRAM, 0);
+	struct sockaddr_in6 addr = {.sin6_family = AF_INET6,
+				    .sin6_port = htons(9)};
+	const char *msg = "hello-v6";
+
+	if (fd < 0) { perror("socket IPv6"); return 1; }
+	inet_pton(AF_INET6, "::1", &addr.sin6_addr);
+	if (sendto(fd, msg, strlen(msg), 0,
+		   (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+		perror("sendto IPv6");
+		close(fd);
+		return 1;
+	}
+	close(fd);
+	printf("[udp6] sent %zu bytes to [::1]:9\n", strlen(msg));
 	return 0;
 }
 
@@ -203,13 +248,40 @@ static int do_sched(void) {
 	return 0;
 }
 
-/* ── slab: malloc/free ────────────────────────────────────── */
+/* ── slab: 创建/销毁内核对象 ─────────────────────────────── */
 static int do_slab(void) {
-	void *ptrs[100];
-	for (int i = 0; i < 100; i++) ptrs[i] = malloc(1024);
-	for (int i = 0; i < 100; i++) free(ptrs[i]);
-	printf("[slab] malloc(1024)/free x100\n");
-	return 0;
+	int errors = 0;
+
+	/*
+	 * 用户态 malloc 主要操作进程堆，并不会和内核 kmem_cache_alloc 一一
+	 * 对应。socketpair、pipe 和 open 会明确创建 file、socket、inode 等
+	 * 内核对象，随后 close 释放它们，是可重复的 slab_rate 压力源。
+	 */
+	for (int i = 0; i < 2000; i++) {
+		int sockets[2];
+		int pipes[2];
+		int fd;
+
+		if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == 0) {
+			close(sockets[0]);
+			close(sockets[1]);
+		} else {
+			errors++;
+		}
+		if (pipe2(pipes, O_CLOEXEC) == 0) {
+			close(pipes[0]);
+			close(pipes[1]);
+		} else {
+			errors++;
+		}
+		fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+		if (fd >= 0)
+			close(fd);
+		else
+			errors++;
+	}
+	printf("[slab] socketpair/pipe/open + close x2000, errors=%d\n", errors);
+	return errors != 0;
 }
 
 /* ── main ─────────────────────────────────────────────────── */
@@ -219,6 +291,8 @@ int main(int argc, char **argv) {
 
 	if      (!strcmp(cmd, "tcp"))     return do_tcp();
 	else if (!strcmp(cmd, "udp"))     return do_udp();
+	else if (!strcmp(cmd, "udpconn")) return do_udp_connect();
+	else if (!strcmp(cmd, "udp6"))    return do_udp6();
 	else if (!strcmp(cmd, "mq"))      return do_mq();
 	else if (!strcmp(cmd, "mqdelay")) return do_mq_delay();
 	else if (!strcmp(cmd, "mqdirect")) return do_mq_direct();
@@ -228,7 +302,8 @@ int main(int argc, char **argv) {
 	else if (!strcmp(cmd, "sched"))   return do_sched();
 	else if (!strcmp(cmd, "slab"))    return do_slab();
 	else if (!strcmp(cmd, "all")) {
-		return do_tcp() | do_udp() | do_mq() | do_mutex() |
+		return do_tcp() | do_udp() | do_udp_connect() | do_udp6() |
+		       do_mq() | do_mutex() |
 		       do_fs() | do_syscall() | do_sched() | do_slab();
 	}
 	usage();
