@@ -1,3 +1,47 @@
+/*
+流程：
+	用户空间线程执行陷入系统调用，CPU触发syscall/sysret陷入内核；
+	tracepoint raw_syscalls/sys_enter 触发；
+		拿到当前CPU的PERCPU_ARRAY类型enter_map缓存；
+		记录sys_enter时间戳start_ts(转换成微秒)、syscall编号存入当前CPU独立缓存；
+	系统调用在内核中执行：可以做拷贝、IO、信号量/mutex等待、睡眠schedule()、被抢占移出CPU；
+
+	系统调用逻辑执行完毕，准备返回用户态；
+	tracepoint raw_syscalls/sys_exit 触发；
+		读取当前CPU enter_map里面保存的start_ts；
+		now = bpf_ktime_get_ns() /1000 获取返回时刻(微秒)；
+		delay = now - v->start_ts，得到本次系统调用内核侧总耗时；
+		立刻置零v->start_ts，清空PER‑CPU缓存，防止下一次系统调用拿到脏旧数据；
+
+		获取当前线程pid/tid；
+		执行过滤：target_pid进程过滤、min_latency_ns最小延时阈值过滤；不满足直接丢弃；
+		ringbuf_reserve分配事件内存，填充syscall_id、pid、tid、comm、delay；
+		更新stats_map全局统计：计数、总耗时、最大耗时记录；
+		bpf_ringbuf_submit把事件发给用户态消费；
+
+边界说明：
+1. enter_map是PERCPU_ARRAY，依靠“同一个系统调用一定在同一个CPU上完成”做配对。
+   如果系统调用执行过程中发生CPU迁移，sys_enter写在CPU‑A缓存，sys_exit跑在CPU‑B，
+   CPU‑B的enter_map中start_ts=0，trace_exit直接return，这条syscall事件丢失。
+2. tracepoint是内核raw_syscalls，捕获**所有线程所有系统调用**，包括中断上下文不会触发，只有用户态发起的syscall才触发。
+3. delay包含的内核行为：内核计算、文件IO、mutex/sem锁等待、schedule睡眠、runqueue排队调度、信号处理；
+   完全不包含系统调用返回之后用户态执行的时间。
+4. 注意代码里字段命名坑：e->delay_ns存的实际是微秒，只是变量名叫delay_ns；对比阈值时做delay*1000还原纳秒。
+*/
+
+/*
+用户态程序 → syscall指令陷入内核
+    → raw_syscalls:sys_enter tracepoint ←【探针入口，记录start_ts】
+        → 内核sys_xxx服务函数执行
+            ├─ 内核CPU运算
+            ├─ 文件读写、拷贝
+            ├─ 获取锁（mutex/semaphore），可能睡眠
+            ├─ schedule()睡眠让出CPU
+            └─ 被唤醒后runqueue排队等待CPU
+    → raw_syscalls:sys_exit tracepoint ←【探针出口，计算delay】
+→ 返回用户态
+*/
+
 #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>

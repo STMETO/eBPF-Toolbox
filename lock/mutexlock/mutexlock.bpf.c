@@ -1,3 +1,48 @@
+/*
+流程：
+	线程T尝试获取mutex锁，快速路径（__mutex_lock）抢锁失败；
+	内核进入 __mutex_lock_slowpath 慢路径函数；
+	kprobe/__mutex_lock_slowpath 探针触发；
+		采集当前竞争线程信息、读取mutex瞬间的owner持锁task快照、记录进入慢路径时间enter_ts；
+		以pid_tgid(线程唯一标识)为key，把全部快照存入contention_map(LRU_HASH)；
+	线程T在slowpath内部做：自适应自旋、加入mutex等待队列、发生睡眠阻塞TASK_UNINTERRUPTIBLE；
+
+	--- 此时线程T休眠，让出CPU；持锁线程继续运行 ---
+
+	持锁线程执行mutex_unlock，唤醒等待队列上的线程T；
+	线程T变为就绪态，进入runqueue调度队列排队，等待CPU调度；
+	CPU调度器选中线程T，线程T恢复执行，再次争抢mutex；
+	如果抢到锁，__mutex_lock_slowpath函数执行return返回；
+
+	kretprobe/__mutex_lock_slowpath 探针触发；
+		使用app_current_pid_tgid_ns拿到当前线程pid_tgid；
+		通过pid_tgid从contention_map查找本次竞争保存的快照数据；
+		wait_ns = 当前时刻 − enter_ts，算出整个慢路径耗时；
+		判断是否大于min_delay_ns阈值，小于阈值直接丢弃事件；
+		阈值达标：分配ringbuf事件，填充锁地址、竞争者、持锁者、耗时等字段；
+		bpf_ringbuf_submit上报事件给用户态；
+		bpf_map_delete_elem清理map中的线程上下文，避免内存泄露；
+
+特殊边界说明：
+1. kprobe入口抓取的owner只是【进入slowpath一瞬间快照】，等待过程锁可能发生handoff移交，owner会变化；上报的owner只是当时快照，不代表全程持有者。
+2. LRU map淘汰、进程退出、探针乱序会产生lookup_miss统计，此时无法计算延时。
+3. 这个延时 = 自旋重试时间 + 睡眠等待时间 + runqueue调度排队时间 + 醒来后再次抢锁的时间总和。
+*/
+
+/*
+__mutex_lock()
+    → fast path原子抢锁失败
+    → __mutex_lock_slowpath()      ← kprobe入口
+        → mutex_spin_on_owner()    // 自适应自旋
+        → __mutex_lock_common()
+            → add to wait_queue
+            → schedule()          // 睡眠，让出CPU
+        // 被unlock唤醒后回到这里
+        → 再次尝试acquire锁
+← kretprobe出口，函数返回，代表成功拿到锁
+s
+*/
+
 #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
